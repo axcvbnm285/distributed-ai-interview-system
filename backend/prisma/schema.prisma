@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+
+  createdAt DateTime @default(now())
+
+  roomsCreated Room[]
+  participants Participant[]
+  messages Message[]
+}
+
+model Room {
+  id            Int      @id @default(autoincrement())
+  roomCode      String   @unique
+
+  interviewerId Int
+
+  interviewer   User @relation(fields: [interviewerId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  participants Participant[]
+  messages Message[]
+}
+
+model Participant {
+  id       Int @id @default(autoincrement())
+
+  roomId   Int
+  userId   Int
+
+  room Room @relation(fields: [roomId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  joinedAt DateTime @default(now())
+}
+
+model Message {
+  id Int @id @default(autoincrement())
+
+  roomId Int
+  senderId Int
+
+  content String
+
+  room Room @relation(fields: [roomId], references: [id])
+  sender User @relation(fields: [senderId], references: [id])
+
+  createdAt DateTime @default(now())
+}
