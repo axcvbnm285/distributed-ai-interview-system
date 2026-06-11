@@ -22,16 +22,19 @@ model User {
 
 model Room {
   id            Int      @id @default(autoincrement())
+
   roomCode      String   @unique
 
   interviewerId Int
 
   interviewer   User @relation(fields: [interviewerId], references: [id])
 
-  createdAt DateTime @default(now())
+  status        String   @default("ACTIVE")
 
-  participants Participant[]
-  messages Message[]
+  createdAt     DateTime @default(now())
+
+  participants  Participant[]
+  messages      Message[]
 }
 
 model Participant {
