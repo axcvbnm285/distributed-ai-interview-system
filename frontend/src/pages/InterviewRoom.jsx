@@ -1,6 +1,8 @@
 import { useParams } from "react-router-dom";
 import { useState, useEffect } from "react";
 import socket from "../services/socket";
+import CodeEditor
+from "../components/CodeEditor";
 
 function InterviewRoom() {
 
@@ -13,14 +15,70 @@ function InterviewRoom() {
 
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
+  const [participants,
+setParticipants] =
+useState([]);
+const [code, setCode] =
+  useState(
+`function hello() {
+  console.log("Hello");
+}`
+);
+
+
+useEffect(() => {
+
+  socket.on(
+    "code-update",
+    (newCode) => {
+
+      setCode(newCode);
+
+    }
+  );
+
+  return () => {
+
+    socket.off(
+      "code-update"
+    );
+
+  };
+
+}, []);
+
+useEffect(() => {
+
+  socket.on(
+    "participants-update",
+    (users) => {
+
+      setParticipants(users);
+
+    }
+  );
+
+  return () => {
+
+    socket.off(
+      "participants-update"
+    );
+
+  };
+
+}, []);
 
   // Join socket room
   useEffect(() => {
 
-    socket.emit(
-      "join-room",
-      roomCode
-    );
+   socket.emit(
+  "join-room",
+  {
+    roomCode,
+    username:
+      currentUser.name
+  }
+);
 
     console.log(
       `Joined room ${roomCode}`
@@ -61,10 +119,6 @@ function InterviewRoom() {
 
     if (!message.trim()) return;
 
-   const currentUser =
-  JSON.parse(
-    localStorage.getItem("user")
-  );
 
 const messageData = {
   roomCode,
@@ -98,6 +152,26 @@ const messageData = {
       </h2>
 
       <hr />
+
+      <h3>
+Participants
+</h3>
+
+<ul>
+
+  {participants.map(
+    (user, index) => (
+
+      <li key={index}>
+        🟢 {user}
+      </li>
+
+    )
+  )}
+
+</ul>
+
+<hr />
 
       {/* Chat Box */}
 
@@ -139,6 +213,29 @@ const messageData = {
         )}
 
       </div>
+
+      <hr />
+
+<h2>
+Collaborative Editor
+</h2>
+
+<CodeEditor
+  code={code}
+  onChange={(value) => {
+
+    setCode(value);
+
+    socket.emit(
+      "code-change",
+      {
+        roomCode,
+        code: value
+      }
+    );
+
+  }}
+/>
 
       {/* Input */}
 
