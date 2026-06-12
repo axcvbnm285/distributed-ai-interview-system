@@ -8,6 +8,10 @@ app.use(express.json());
 
 const authRoutes = require('./routes/routes');
 
+const roomRoutes = require("./routes/room.routes");
+
+app.use("/rooms", roomRoutes);
+
 app.use('/auth', authRoutes);
 app.get('/', (req, res) => {
   res.send('Interview Platform API Running');
