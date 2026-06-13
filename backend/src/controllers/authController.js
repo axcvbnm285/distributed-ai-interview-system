@@ -44,13 +44,20 @@ exports.register = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
+
+    console.log("BODY:", req.body);
   try {
     const { email, password } = req.body;
+
+    console.log("EMAIL:", email);
+
 
     const user =
       await prisma.user.findUnique({
         where: { email },
       });
+
+       console.log("USER:", user);
 
     if (!user) {
       return res.status(401).json({
@@ -63,6 +70,7 @@ exports.login = async (req, res) => {
         password,
         user.password
       );
+        console.log("PASSWORD MATCH:", isMatch);
 
     if (!isMatch) {
       return res.status(401).json({
@@ -77,8 +85,13 @@ exports.login = async (req, res) => {
     );
 
     res.json({
-      token,
-    });
+  token,
+  user: {
+    id: user.id,
+    name: user.name,
+    email: user.email
+  }
+});
 
   } catch (error) {
     console.log(error);
