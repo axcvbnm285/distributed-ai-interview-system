@@ -20,11 +20,8 @@ const PYTHON_BOILERPLATE =
   "\n" +
   "# write your solution here\n";
 
-// ── blank custom question form state ─────────────────────
 const BLANK_FORM = {
-  title: "",
-  difficulty: "Easy",
-  description: "",
+  title: "", difficulty: "Easy", description: "",
   starterCode: PYTHON_BOILERPLATE,
   testCases: [{ input: "", expected: "" }],
 };
@@ -32,8 +29,13 @@ const BLANK_FORM = {
 function InterviewRoom() {
   const { roomCode } = useParams();
   const navigate     = useNavigate();
+
+  // Role comes from localStorage (set at login from DB)
   const currentUser  = JSON.parse(localStorage.getItem("user") || "{}");
-  const chatEndRef   = useRef(null);
+  const role         = currentUser.role || "INTERVIEWEE"; // "INTERVIEWER" | "INTERVIEWEE"
+  const isInterviewer = role === "INTERVIEWER";
+
+  const chatEndRef = useRef(null);
 
   // ── chat / room ────────────────────────────────────────
   const [message,      setMessage]      = useState("");
@@ -41,14 +43,14 @@ function InterviewRoom() {
   const [participants, setParticipants] = useState([]);
 
   // ── editor ─────────────────────────────────────────────
-  const [code,     setCode]     = useState("# Select a question to begin\n");
+  const [code,     setCode]     = useState("# Waiting for the interviewer to load a question...\n");
   const [question, setQuestion] = useState(null);
 
   // ── left panel ─────────────────────────────────────────
-  const [activeTab,    setActiveTab]    = useState("question"); // question | add | chat | webcam
-  const [questionView, setQuestionView] = useState("list");     // list | detail   (within question tab)
+  const [activeTab,    setActiveTab]    = useState("question");
+  const [questionView, setQuestionView] = useState("list");
 
-  // ── custom question form (interviewer) ─────────────────
+  // ── custom question form (interviewer only) ────────────
   const [form,     setForm]     = useState(BLANK_FORM);
   const [formSent, setFormSent] = useState(false);
 
@@ -63,14 +65,18 @@ function InterviewRoom() {
   const [expectedOut,  setExpectedOut]  = useState("");
   const [manualResult, setManualResult] = useState(null);
 
-  // ── scroll chat ────────────────────────────────────────
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   // ── socket ─────────────────────────────────────────────
   useEffect(() => {
-    socket.emit("join-room", { roomCode, username: currentUser.name });
+    socket.emit("join-room", {
+      roomCode,
+      username: currentUser.name,
+      userId:   currentUser.id,
+      role,                          // send role so server registers it correctly
+    });
 
     socket.on("question-update", (q) => {
       setQuestion(q);
@@ -83,7 +89,7 @@ function InterviewRoom() {
     });
     socket.on("code-update",         setCode);
     socket.on("participants-update", setParticipants);
-    socket.on("receive-message",     (data) => setMessages((p) => [...p, data]));
+    socket.on("receive-message",     (data) => setMessages(p => [...p, data]));
 
     return () => {
       socket.off("question-update");
@@ -93,7 +99,7 @@ function InterviewRoom() {
     };
   }, [roomCode]);
 
-  // ── select a builtin question ──────────────────────────
+  // ── question actions (interviewer only) ───────────────
   const selectQuestion = (q) => {
     setQuestion(q);
     setCode(q.starterCode || PYTHON_BOILERPLATE);
@@ -104,7 +110,6 @@ function InterviewRoom() {
     socket.emit("question-change", { roomCode, question: q });
   };
 
-  // ── broadcast custom question ──────────────────────────
   const broadcastCustomQuestion = () => {
     const tc = form.testCases.filter(t => t.input.trim() || t.expected.trim());
     const q  = { ...form, testCases: tc };
@@ -115,48 +120,32 @@ function InterviewRoom() {
     setActiveCase(0);
     setFormSent(true);
     socket.emit("question-change", { roomCode, question: q });
-    // switch to question detail view so interviewer also sees it
     setActiveTab("question");
     setQuestionView("detail");
   };
 
   // ── form helpers ───────────────────────────────────────
-  const updateFormField = (field, value) => {
-    setForm(f => ({ ...f, [field]: value }));
+  const updateFormField = (k, v) => { setForm(f => ({ ...f, [k]: v })); setFormSent(false); };
+  const updateTestCase  = (i, k, v) => {
+    setForm(f => { const tc = [...f.testCases]; tc[i] = { ...tc[i], [k]: v }; return { ...f, testCases: tc }; });
     setFormSent(false);
   };
+  const addTestCase    = () => setForm(f => ({ ...f, testCases: [...f.testCases, { input: "", expected: "" }] }));
+  const removeTestCase = (i) => setForm(f => ({ ...f, testCases: f.testCases.filter((_, idx) => idx !== i) }));
+  const resetForm      = () => { setForm(BLANK_FORM); setFormSent(false); };
 
-  const updateTestCase = (i, field, value) => {
-    setForm(f => {
-      const tc = [...f.testCases];
-      tc[i] = { ...tc[i], [field]: value };
-      return { ...f, testCases: tc };
-    });
-    setFormSent(false);
-  };
-
-  const addTestCase = () =>
-    setForm(f => ({ ...f, testCases: [...f.testCases, { input: "", expected: "" }] }));
-
-  const removeTestCase = (i) =>
-    setForm(f => ({ ...f, testCases: f.testCases.filter((_, idx) => idx !== i) }));
-
-  const resetForm = () => { setForm(BLANK_FORM); setFormSent(false); };
-
-  // ── run (console) — uses first test case as default input ──
+  // ── run (console, auto-feeds first test case) ─────────
   const runCode = async () => {
     setRunning(true);
     setConsoleOut("");
     setManualResult(null);
     setOutputTab("console");
-    // Use first test case input if no manual input provided
-    const stdinInput = testInput || question?.testCases?.[0]?.input || "";
-    const stdinExpected = expectedOut || question?.testCases?.[0]?.expected || "";
+    const inp = testInput || question?.testCases?.[0]?.input    || "";
+    const exp = expectedOut || question?.testCases?.[0]?.expected || "";
     try {
-      const { data } = await api.post("/code/run", { code, language: LANGUAGE, input: stdinInput });
+      const { data } = await api.post("/code/run", { code, language: LANGUAGE, input: inp });
       setConsoleOut(data.output);
-      if (stdinExpected.trim())
-        setManualResult(data.output.trim() === stdinExpected.trim() ? "pass" : "fail");
+      if (exp.trim()) setManualResult(data.output.trim() === exp.trim() ? "pass" : "fail");
     } catch {
       setConsoleOut("Error: Failed to execute code.");
     } finally {
@@ -164,7 +153,7 @@ function InterviewRoom() {
     }
   };
 
-  // ── submit / run tests ─────────────────────────────────
+  // ── submit / run all tests ─────────────────────────────
   const runTests = async () => {
     if (!question?.testCases?.length) return;
     setRunningTests(true);
@@ -193,6 +182,14 @@ function InterviewRoom() {
   const passed  = testResults.filter(r => r.passed).length;
   const total   = testResults.length;
   const allPass = total > 0 && passed === total;
+
+  // ── tabs by role ───────────────────────────────────────
+  const tabs = [
+    { id: "question", label: "📋" },
+    ...(isInterviewer ? [{ id: "add", label: "➕" }] : []),
+    { id: "chat",     label: `💬${messages.length > 0 ? ` (${messages.length})` : ""}` },
+    { id: "webcam",   label: "📷" },
+  ];
 
   return (
     <div className="h-screen bg-[#0f0f13] text-white flex flex-col overflow-hidden">
@@ -224,11 +221,22 @@ function InterviewRoom() {
           </svg>
         </button>
 
+        {/* Role badge */}
+        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-semibold ${
+          isInterviewer
+            ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+            : "bg-blue-500/10 border-blue-500/30 text-blue-400"
+        }`}>
+          <span>{isInterviewer ? "🟢" : "🔵"}</span>
+          {isInterviewer ? "Interviewer" : "Interviewee"}
+        </div>
+
         {/* Participants */}
         <div className="flex items-center gap-2 ml-1">
           {participants.slice(0, 4).map((u, i) => (
-            <div key={i} className="w-7 h-7 rounded-full bg-violet-600/30 border border-violet-500/40 flex items-center justify-center text-xs font-bold text-violet-300"
-              style={{ marginLeft: i > 0 ? "-8px" : "0" }} title={u}>
+            <div key={i} title={u}
+              className="w-7 h-7 rounded-full bg-violet-600/30 border border-violet-500/40 flex items-center justify-center text-xs font-bold text-violet-300"
+              style={{ marginLeft: i > 0 ? "-8px" : "0" }}>
               {u.charAt(0).toUpperCase()}
             </div>
           ))}
@@ -239,12 +247,11 @@ function InterviewRoom() {
           </div>
         </div>
 
-        {/* Language badge + actions */}
+        {/* Actions */}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center gap-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-1.5">
             <span className="text-xs text-blue-400 font-semibold">🐍 Python</span>
           </div>
-
           <button onClick={runCode} disabled={running || runningTests}
             className="flex items-center gap-1.5 bg-[#1e1e2a] hover:bg-[#2a2a38] border border-[#2a2a38] disabled:opacity-50 disabled:cursor-not-allowed text-gray-300 text-sm font-semibold px-4 py-1.5 rounded-lg transition-all">
             {running ? <Spinner /> : (
@@ -254,7 +261,6 @@ function InterviewRoom() {
             )}
             Run
           </button>
-
           <button onClick={runTests} disabled={running || runningTests || !question?.testCases?.length}
             className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-800 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-1.5 rounded-lg transition-all shadow-lg shadow-emerald-900/30 hover:-translate-y-0.5 active:translate-y-0">
             {runningTests ? <Spinner /> : (
@@ -272,15 +278,8 @@ function InterviewRoom() {
 
         {/* ── Left Panel ── */}
         <aside className="w-[340px] shrink-0 border-r border-[#2a2a38] flex flex-col bg-[#0f0f13] overflow-hidden">
-
-          {/* Tabs */}
           <div className="flex border-b border-[#2a2a38] shrink-0">
-            {[
-              { id: "question", label: "📋" },
-              { id: "add",      label: "➕" },
-              { id: "chat",     label: `💬${messages.length > 0 ? ` (${messages.length})` : ""}` },
-              { id: "webcam",   label: "📷" },
-            ].map(({ id, label }) => (
+            {tabs.map(({ id, label }) => (
               <button key={id} onClick={() => setActiveTab(id)}
                 className={`flex-1 py-3 text-xs font-semibold uppercase tracking-wider transition-all ${
                   activeTab === id ? "text-violet-400 border-b-2 border-violet-500 bg-violet-500/5" : "text-gray-600 hover:text-gray-400"
@@ -294,10 +293,11 @@ function InterviewRoom() {
           {activeTab === "question" && (
             <div className="flex flex-col flex-1 overflow-hidden">
               {questionView === "list" ? (
-                <>
-                  <div className="p-3 border-b border-[#2a2a38] shrink-0">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Problems</p>
-                    <div className="flex flex-col gap-1 overflow-y-auto" style={{ maxHeight: "calc(100vh - 160px)" }}>
+                /* List: interviewer sees problems, interviewee sees waiting */
+                isInterviewer ? (
+                  <div className="p-3 flex flex-col flex-1 overflow-hidden">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 shrink-0">Problem Bank</p>
+                    <div className="flex flex-col gap-1 overflow-y-auto flex-1 pr-1">
                       {builtinQuestions.map((q, i) => (
                         <button key={i} onClick={() => selectQuestion(q)}
                           className={`flex items-center justify-between text-left px-3 py-2 rounded-lg border transition-all ${
@@ -313,18 +313,36 @@ function InterviewRoom() {
                       ))}
                     </div>
                   </div>
-                </>
-              ) : (
-                /* ── Question Detail ── */
-                <div className="flex flex-col flex-1 overflow-hidden">
-                  <div className="flex items-center gap-2 px-4 py-2 border-b border-[#2a2a38] shrink-0">
-                    <button onClick={() => setQuestionView("list")} className="text-gray-600 hover:text-gray-300 transition-colors">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6 text-center">
+                    <div className="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center animate-pulse-glow">
+                      <svg className="w-7 h-7 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
-                    </button>
-                    <span className="text-xs text-gray-500">Back to list</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white mb-1">Waiting for question</p>
+                      <p className="text-xs text-gray-600 leading-relaxed">The interviewer will load a problem for you shortly. Get your editor ready!</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                      <span className="text-xs text-gray-600">Interviewer is preparing...</span>
+                    </div>
                   </div>
+                )
+              ) : (
+                /* Detail view — both roles */
+                <div className="flex flex-col flex-1 overflow-hidden">
+                  {isInterviewer && (
+                    <div className="flex items-center gap-2 px-4 py-2 border-b border-[#2a2a38] shrink-0">
+                      <button onClick={() => setQuestionView("list")} className="text-gray-600 hover:text-gray-300 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
+                      <span className="text-xs text-gray-500">Back to problems</span>
+                    </div>
+                  )}
                   <div className="flex-1 overflow-y-auto p-4">
                     {question && (
                       <div className="animate-fade-in space-y-4">
@@ -338,18 +356,11 @@ function InterviewRoom() {
                         </div>
                         <h3 className="text-white font-semibold text-base">{question.title}</h3>
                         <p className="text-gray-400 text-xs leading-relaxed whitespace-pre-line">{question.description}</p>
-
                         {question.testCases?.[0] && (
                           <div className="space-y-2">
                             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Example</p>
-                            <div className="bg-[#1e1e2a] rounded-lg p-3 border border-[#2a2a38]">
-                              <p className="text-xs text-gray-500 mb-1">Input:</p>
-                              <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap">{question.testCases[0].input}</pre>
-                            </div>
-                            <div className="bg-[#1e1e2a] rounded-lg p-3 border border-[#2a2a38]">
-                              <p className="text-xs text-gray-500 mb-1">Output:</p>
-                              <pre className="text-xs text-emerald-400 font-mono">{question.testCases[0].expected}</pre>
-                            </div>
+                            <CaseBlock label="Input"  value={question.testCases[0].input}    color="text-gray-300" />
+                            <CaseBlock label="Output" value={question.testCases[0].expected} color="text-emerald-400" />
                           </div>
                         )}
                       </div>
@@ -360,8 +371,8 @@ function InterviewRoom() {
             </div>
           )}
 
-          {/* ── Add Question Tab (Interviewer) ── */}
-          {activeTab === "add" && (
+          {/* ── Add Question Tab — Interviewer only ── */}
+          {activeTab === "add" && isInterviewer && (
             <div className="flex flex-col flex-1 overflow-y-auto">
               <div className="p-4 space-y-3">
                 <div className="flex items-center justify-between mb-1">
@@ -369,71 +380,46 @@ function InterviewRoom() {
                   <button onClick={resetForm} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Reset</button>
                 </div>
 
-                {/* Title */}
                 <div>
                   <label className="text-xs text-gray-600 block mb-1">Title</label>
-                  <input
-                    value={form.title}
-                    onChange={e => updateFormField("title", e.target.value)}
-                    placeholder="e.g. Sum of Digits"
-                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all"
-                  />
+                  <input value={form.title} onChange={e => updateFormField("title", e.target.value)}
+                    placeholder="e.g. Sum of Array"
+                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all" />
                 </div>
 
-                {/* Difficulty */}
                 <div>
                   <label className="text-xs text-gray-600 block mb-1">Difficulty</label>
                   <select value={form.difficulty} onChange={e => updateFormField("difficulty", e.target.value)}
-                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-violet-500 transition-all cursor-pointer">
-                    <option value="Easy">Easy</option>
-                    <option value="Medium">Medium</option>
-                    <option value="Hard">Hard</option>
+                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-violet-500 cursor-pointer transition-all">
+                    <option>Easy</option><option>Medium</option><option>Hard</option>
                   </select>
                 </div>
 
-                {/* Description */}
                 <div>
                   <label className="text-xs text-gray-600 block mb-1">Description</label>
-                  <textarea
-                    rows={4}
-                    value={form.description}
-                    onChange={e => updateFormField("description", e.target.value)}
+                  <textarea rows={4} value={form.description} onChange={e => updateFormField("description", e.target.value)}
                     placeholder="Describe the problem..."
-                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all resize-none"
-                  />
+                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all resize-none" />
                 </div>
 
-                {/* Starter Code */}
                 <div>
-                  <label className="text-xs text-gray-600 block mb-1">Starter Code / Driver (Python)</label>
+                  <label className="text-xs text-gray-600 block mb-1">Starter Code + Driver (Python)</label>
                   <div className="bg-violet-500/5 border border-violet-500/15 rounded-lg px-3 py-2 mb-2">
-                    <p className="text-[10px] text-violet-400 font-semibold mb-1">How it works</p>
-                    <p className="text-[10px] text-gray-500 leading-relaxed">
-                      Write a <span className="text-violet-300">def your_function(...)</span> stub + a driver that reads stdin, calls it, and prints the result.
-                      The candidate fills in the function body only. Test case inputs are fed as stdin automatically.
-                    </p>
+                    <p className="text-[10px] text-violet-400 font-semibold mb-0.5">Driver pattern</p>
+                    <p className="text-[10px] text-gray-600 leading-relaxed">Define a function stub + a driver that reads stdin, calls it, prints result. Candidate fills function body only.</p>
                   </div>
-                  <textarea
-                    rows={8}
-                    value={form.starterCode}
-                    onChange={e => updateFormField("starterCode", e.target.value)}
-                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs font-mono placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all resize-none"
-                  />
+                  <textarea rows={7} value={form.starterCode} onChange={e => updateFormField("starterCode", e.target.value)}
+                    className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs font-mono focus:outline-none focus:border-violet-500 transition-all resize-none" />
                 </div>
 
-                {/* Test Cases */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-xs text-gray-600">Test Cases</label>
-                    <button onClick={addTestCase}
-                      className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1 transition-colors">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
+                    <button onClick={addTestCase} className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1 transition-colors">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                       Add case
                     </button>
                   </div>
-
                   <div className="space-y-3">
                     {form.testCases.map((tc, i) => (
                       <div key={i} className="bg-[#1e1e2a] border border-[#2a2a38] rounded-xl p-3 space-y-2">
@@ -441,57 +427,34 @@ function InterviewRoom() {
                           <span className="text-xs text-gray-600 font-semibold">Case {i + 1}</span>
                           {form.testCases.length > 1 && (
                             <button onClick={() => removeTestCase(i)} className="text-gray-700 hover:text-red-400 transition-colors">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                           )}
                         </div>
                         <div>
-                          <label className="text-[10px] text-gray-600 block mb-1">Input</label>
-                          <textarea
-                            rows={2}
-                            value={tc.input}
-                            onChange={e => updateTestCase(i, "input", e.target.value)}
-                            placeholder="stdin input"
-                            className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-2 py-1.5 text-xs font-mono text-gray-300 placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all resize-none"
-                          />
+                          <label className="text-[10px] text-gray-600 block mb-1">Input (stdin)</label>
+                          <textarea rows={2} value={tc.input} onChange={e => updateTestCase(i, "input", e.target.value)}
+                            placeholder="stdin fed to driver"
+                            className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-2 py-1.5 text-xs font-mono text-gray-300 placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all resize-none" />
                         </div>
                         <div>
                           <label className="text-[10px] text-gray-600 block mb-1">Expected Output</label>
-                          <textarea
-                            rows={2}
-                            value={tc.expected}
-                            onChange={e => updateTestCase(i, "expected", e.target.value)}
-                            placeholder="expected stdout"
-                            className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-2 py-1.5 text-xs font-mono text-gray-300 placeholder-gray-700 focus:outline-none focus:border-emerald-500/50 transition-all resize-none"
-                          />
+                          <textarea rows={2} value={tc.expected} onChange={e => updateTestCase(i, "expected", e.target.value)}
+                            placeholder="what driver should print"
+                            className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-2 py-1.5 text-xs font-mono text-gray-300 placeholder-gray-700 focus:outline-none focus:border-emerald-500/50 transition-all resize-none" />
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* Broadcast button */}
-                <button
-                  onClick={broadcastCustomQuestion}
+                <button onClick={broadcastCustomQuestion}
                   disabled={!form.title.trim() || !form.description.trim()}
-                  className="w-full flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-xs font-semibold py-2.5 rounded-xl transition-all shadow-lg shadow-violet-900/30 hover:-translate-y-0.5 active:translate-y-0 mt-2"
-                >
+                  className="w-full flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-xs font-semibold py-2.5 rounded-xl transition-all shadow-lg shadow-violet-900/30 hover:-translate-y-0.5 active:translate-y-0 mt-1">
                   {formSent ? (
-                    <>
-                      <svg className="w-3.5 h-3.5 text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      Sent to Room
-                    </>
+                    <><svg className="w-3.5 h-3.5 text-emerald-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Sent to Room</>
                   ) : (
-                    <>
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                      </svg>
-                      Broadcast to Room
-                    </>
+                    <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" /></svg> Broadcast to Room</>
                   )}
                 </button>
               </div>
@@ -503,7 +466,7 @@ function InterviewRoom() {
             <div className="px-4 pt-4 pb-1 shrink-0">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Call</p>
             </div>
-            <Webcam username={currentUser.name} roomCode={roomCode} socket={socket} />
+            <Webcam username={currentUser.name} roomCode={roomCode} socket={socket} role={role} />
           </div>
 
           {/* ── Chat Tab ── */}
@@ -555,21 +518,15 @@ function InterviewRoom() {
 
           {/* ── Output Panel ── */}
           <div className="shrink-0 border-t border-[#2a2a38] bg-[#0a0a0e] flex flex-col" style={{ height: "280px" }}>
-
             <div className="flex items-center border-b border-[#2a2a38] shrink-0 px-4">
               <button onClick={() => setOutputTab("tests")}
-                className={`py-2.5 px-1 mr-4 text-xs font-semibold border-b-2 transition-all ${
-                  outputTab === "tests" ? "border-violet-500 text-violet-400" : "border-transparent text-gray-600 hover:text-gray-400"
-                }`}>
+                className={`py-2.5 px-1 mr-4 text-xs font-semibold border-b-2 transition-all ${outputTab === "tests" ? "border-violet-500 text-violet-400" : "border-transparent text-gray-600 hover:text-gray-400"}`}>
                 Test Cases
               </button>
               <button onClick={() => setOutputTab("console")}
-                className={`py-2.5 px-1 text-xs font-semibold border-b-2 transition-all ${
-                  outputTab === "console" ? "border-violet-500 text-violet-400" : "border-transparent text-gray-600 hover:text-gray-400"
-                }`}>
+                className={`py-2.5 px-1 text-xs font-semibold border-b-2 transition-all ${outputTab === "console" ? "border-violet-500 text-violet-400" : "border-transparent text-gray-600 hover:text-gray-400"}`}>
                 Console
               </button>
-
               {total > 0 && !runningTests && (
                 <div className={`ml-auto flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full border animate-fade-in ${
                   allPass ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-red-500/15 text-red-400 border-red-500/30"
@@ -578,9 +535,7 @@ function InterviewRoom() {
                 </div>
               )}
               {runningTests && (
-                <div className="ml-auto flex items-center gap-1.5 text-xs text-violet-400">
-                  <Spinner /> Running...
-                </div>
+                <div className="ml-auto flex items-center gap-1.5 text-xs text-violet-400"><Spinner /> Running...</div>
               )}
             </div>
 
@@ -589,47 +544,33 @@ function InterviewRoom() {
               <div className="flex flex-1 overflow-hidden">
                 <div className="w-28 shrink-0 border-r border-[#2a2a38] overflow-y-auto py-2">
                   {(question?.testCases || []).map((_, i) => {
-                    const result = testResults[i];
+                    const r = testResults[i];
                     return (
                       <button key={i} onClick={() => setActiveCase(i)}
-                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-all ${
-                          activeCase === i ? "bg-violet-500/10 text-violet-300" : "text-gray-600 hover:text-gray-300 hover:bg-[#1e1e2a]/50"
-                        }`}>
-                        {result
-                          ? <span className={`w-2 h-2 rounded-full shrink-0 ${result.passed ? "bg-emerald-400" : "bg-red-400"}`} />
-                          : <span className="w-2 h-2 rounded-full bg-gray-700 shrink-0" />
-                        }
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs transition-all ${activeCase === i ? "bg-violet-500/10 text-violet-300" : "text-gray-600 hover:text-gray-300 hover:bg-[#1e1e2a]/50"}`}>
+                        {r ? <span className={`w-2 h-2 rounded-full shrink-0 ${r.passed ? "bg-emerald-400" : "bg-red-400"}`} />
+                           : <span className="w-2 h-2 rounded-full bg-gray-700 shrink-0" />}
                         Case {i + 1}
                       </button>
                     );
                   })}
                   {!question && <p className="text-xs text-gray-700 px-3 py-2">No question</p>}
                 </div>
-
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   {question?.testCases?.[activeCase] ? (() => {
-                    const tc     = question.testCases[activeCase];
-                    const result = testResults[activeCase];
+                    const tc = question.testCases[activeCase];
+                    const r  = testResults[activeCase];
                     return (
                       <>
-                        {result && (
-                          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold animate-fade-in ${
-                            result.passed
-                              ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400"
-                              : "bg-red-500/10 border border-red-500/20 text-red-400"
-                          }`}>
-                            {result.passed ? "✅ Accepted" : "❌ Wrong Answer"}
+                        {r && (
+                          <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold animate-fade-in ${r.passed ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400" : "bg-red-500/10 border border-red-500/20 text-red-400"}`}>
+                            {r.passed ? "✅ Accepted" : "❌ Wrong Answer"}
                           </div>
                         )}
-                        <CaseBlock label="Input"           value={tc.input}            color="text-gray-300" />
-                        <CaseBlock label="Expected Output" value={tc.expected}          color="text-emerald-400" />
-                        {result && (
-                          <CaseBlock label="Your Output" value={result.actual || "(empty)"}
-                            color={result.passed ? "text-emerald-400" : "text-red-400"} />
-                        )}
-                        {!result && !runningTests && (
-                          <p className="text-xs text-gray-700 font-mono">Click Submit to run test cases.</p>
-                        )}
+                        <CaseBlock label="Input"           value={tc.input}   color="text-gray-300" />
+                        <CaseBlock label="Expected Output" value={tc.expected} color="text-emerald-400" />
+                        {r && <CaseBlock label="Your Output" value={r.actual || "(empty)"} color={r.passed ? "text-emerald-400" : "text-red-400"} />}
+                        {!r && !runningTests && <p className="text-xs text-gray-700 font-mono">Click Submit to run test cases.</p>}
                       </>
                     );
                   })() : (
@@ -647,30 +588,21 @@ function InterviewRoom() {
                 <div className="flex gap-3 px-4 pt-3 pb-2 border-b border-[#2a2a38] shrink-0">
                   <div className="flex-1">
                     <label className="text-xs text-gray-600 font-mono block mb-1">
-                      stdin
-                      {question?.testCases?.[0] && !testInput && (
-                        <span className="ml-2 text-violet-500">(auto: case 1)</span>
-                      )}
+                      stdin {question?.testCases?.[0] && !testInput && <span className="text-violet-500 ml-1">(auto: case 1)</span>}
                     </label>
-                    <textarea rows={2} value={testInput}
-                      onChange={e => setTestInput(e.target.value)}
+                    <textarea rows={2} value={testInput} onChange={e => setTestInput(e.target.value)}
                       placeholder={question?.testCases?.[0]?.input || "custom input..."}
                       className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-1.5 text-xs font-mono text-gray-300 placeholder-gray-600 focus:outline-none focus:border-violet-500 transition-all resize-none" />
                   </div>
                   <div className="flex-1">
                     <label className="text-xs text-gray-600 font-mono block mb-1">
-                      expected
-                      {question?.testCases?.[0] && !expectedOut && (
-                        <span className="ml-2 text-violet-500">(auto: case 1)</span>
-                      )}
+                      expected {question?.testCases?.[0] && !expectedOut && <span className="text-violet-500 ml-1">(auto: case 1)</span>}
                     </label>
-                    <textarea rows={2} value={expectedOut}
-                      onChange={e => setExpectedOut(e.target.value)}
+                    <textarea rows={2} value={expectedOut} onChange={e => setExpectedOut(e.target.value)}
                       placeholder={question?.testCases?.[0]?.expected || "expected output..."}
                       className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-1.5 text-xs font-mono text-gray-300 placeholder-gray-600 focus:outline-none focus:border-emerald-500/50 transition-all resize-none" />
                   </div>
                 </div>
-
                 <div className="flex items-center gap-2 px-4 py-1.5 border-b border-[#2a2a38]/50 shrink-0">
                   <div className="flex gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-[#ff5f57]" />
@@ -678,27 +610,19 @@ function InterviewRoom() {
                     <span className="w-2 h-2 rounded-full bg-[#28c840]" />
                   </div>
                   <span className="text-xs text-gray-600 font-mono ml-1">stdout</span>
-                  {running && (
-                    <div className="ml-auto flex items-center gap-1.5 text-xs text-emerald-400">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Executing...
-                    </div>
-                  )}
+                  {running && <div className="ml-auto flex items-center gap-1.5 text-xs text-emerald-400"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Executing...</div>}
                   {manualResult && !running && (
                     <div className={`ml-auto flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border animate-fade-in ${
-                      manualResult === "pass"
-                        ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
-                        : "bg-red-500/15 text-red-400 border-red-500/30"
+                      manualResult === "pass" ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" : "bg-red-500/15 text-red-400 border-red-500/30"
                     }`}>
                       {manualResult === "pass" ? "✅ Passed" : "❌ Failed"}
                     </div>
                   )}
                 </div>
-
                 <div className="flex-1 overflow-y-auto px-4 py-3">
                   {consoleOut
                     ? <pre className="text-sm font-mono text-emerald-300 whitespace-pre-wrap leading-relaxed">{consoleOut}</pre>
-                    : <p className="text-xs text-gray-700 font-mono">{running ? "" : "// Press Run to execute with custom input"}</p>
-                  }
+                    : <p className="text-xs text-gray-700 font-mono">{running ? "" : "// Press Run to execute"}</p>}
                   {running && <span className="inline-block w-2 h-4 bg-emerald-400 animate-blink ml-1 align-middle" />}
                 </div>
               </div>
