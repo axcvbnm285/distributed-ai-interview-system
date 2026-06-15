@@ -34,8 +34,12 @@ function InterviewRoom() {
   const currentUser  = JSON.parse(localStorage.getItem("user") || "{}");
   const role         = currentUser.role || "INTERVIEWEE"; // "INTERVIEWER" | "INTERVIEWEE"
   const isInterviewer = role === "INTERVIEWER";
+  const normalizedRole = String(role || "").toLowerCase();
+  const canManageNotes = normalizedRole === "interviewer";
+  const notesStorageKey = `interview-notes:${roomCode}`;
 
   const chatEndRef = useRef(null);
+  const initialLocalNotesRef = useRef("");
 
   // ── chat / room ────────────────────────────────────────
   const [message,      setMessage]      = useState("");
@@ -54,6 +58,11 @@ function InterviewRoom() {
   const [form,     setForm]     = useState(BLANK_FORM);
   const [formSent, setFormSent] = useState(false);
 
+  // ── interview notes (interviewer only) ─────────────────
+  const [notes, setNotes] = useState("");
+  const [notesLoadedForKey, setNotesLoadedForKey] = useState("");
+  const [notesRemoteReady, setNotesRemoteReady] = useState(false);
+
   // ── output / test ──────────────────────────────────────
   const [outputTab,    setOutputTab]    = useState("tests");
   const [running,      setRunning]      = useState(false);
@@ -68,6 +77,88 @@ function InterviewRoom() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (!canManageNotes) {
+      setNotes("");
+      setNotesLoadedForKey("");
+      setNotesRemoteReady(false);
+      initialLocalNotesRef.current = "";
+      return;
+    }
+
+    const savedNotes = localStorage.getItem(notesStorageKey);
+    initialLocalNotesRef.current = savedNotes || "";
+    setNotes(savedNotes || "");
+    setNotesLoadedForKey(notesStorageKey);
+    setNotesRemoteReady(false);
+  }, [canManageNotes, notesStorageKey]);
+
+  useEffect(() => {
+    if (!canManageNotes || notesLoadedForKey !== notesStorageKey) return;
+    localStorage.setItem(notesStorageKey, notes);
+  }, [canManageNotes, notes, notesLoadedForKey, notesStorageKey]);
+
+  useEffect(() => {
+    if (!canManageNotes || notesLoadedForKey !== notesStorageKey) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setNotesRemoteReady(true);
+      return;
+    }
+
+    let ignore = false;
+
+    const loadRoomNotes = async () => {
+      try {
+        const { data } = await api.get(`/rooms/${roomCode}/notes`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (ignore) return;
+
+        setNotes((currentNotes) => {
+          if (currentNotes !== initialLocalNotesRef.current) return currentNotes;
+          if (currentNotes.trim()) return currentNotes;
+          return data.notes || "";
+        });
+      } catch {
+        // Local notes remain the fallback source if the room note request fails.
+      } finally {
+        if (!ignore) {
+          setNotesRemoteReady(true);
+        }
+      }
+    };
+
+    loadRoomNotes();
+
+    return () => {
+      ignore = true;
+    };
+  }, [canManageNotes, notesLoadedForKey, notesStorageKey, roomCode]);
+
+  useEffect(() => {
+    if (!canManageNotes || !notesRemoteReady || notesLoadedForKey !== notesStorageKey) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        await api.put(
+          `/rooms/${roomCode}/notes`,
+          { notes },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      } catch {
+        // Keep localStorage as the resilient fallback for transient save failures.
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [canManageNotes, notes, notesLoadedForKey, notesRemoteReady, notesStorageKey, roomCode]);
 
   // ── socket ─────────────────────────────────────────────
   useEffect(() => {
@@ -515,6 +606,23 @@ function InterviewRoom() {
               socket.emit("code-change", { roomCode, code: value });
             }} />
           </div>
+
+          {canManageNotes && (
+            <section className="shrink-0 h-52 border-t border-[#2a2a38] bg-[#0d0d12] flex flex-col">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a38] shrink-0">
+                <h3 className="text-sm font-semibold text-white">Interview Notes</h3>
+                <span className="text-[11px] text-gray-600 font-mono">Private to interviewer</span>
+              </div>
+              <div className="flex-1 p-4">
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder={"Strong in Trees\nWeak in Dynamic Programming\nGood Communication"}
+                  className="w-full h-full resize-none rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500 transition-all"
+                />
+              </div>
+            </section>
+          )}
 
           {/* ── Output Panel ── */}
           <div className="shrink-0 border-t border-[#2a2a38] bg-[#0a0a0e] flex flex-col" style={{ height: "280px" }}>

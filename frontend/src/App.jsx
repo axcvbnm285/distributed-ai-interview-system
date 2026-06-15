@@ -3,6 +3,7 @@ import Login        from "./pages/Login";
 import Register     from "./pages/Register";
 import Dashboard    from "./pages/Dashboard";
 import InterviewRoom from "./pages/InterviewRoom";
+import InterviewHistory from "./pages/InterviewHistory";
 
 function App() {
   return (
@@ -11,6 +12,7 @@ function App() {
         <Route path="/"          element={<Login />} />
         <Route path="/register"  element={<Register />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/history"   element={<InterviewHistory />} />
         <Route path="/room/:roomCode" element={<InterviewRoom />} />
       </Routes>
     </BrowserRouter>

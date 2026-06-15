@@ -62,6 +62,12 @@ function Dashboard() {
             <span className="font-bold text-white">Interview<span className="shimmer-text">Flow</span></span>
           </div>
           <div className="flex items-center gap-4">
+            {isInterviewer && (
+              <Link to="/history"
+                className="text-xs text-violet-400 hover:text-violet-300 border border-violet-500/30 hover:border-violet-500/50 px-3 py-1.5 rounded-lg transition-all duration-200">
+                History
+              </Link>
+            )}
             {/* Role badge */}
             <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-semibold ${
               isInterviewer
@@ -113,7 +119,7 @@ function Dashboard() {
           </div>
         )}
 
-        <div className={`grid gap-6 max-w-2xl mx-auto ${isInterviewer ? "sm:grid-cols-2" : "grid-cols-1 max-w-md"}`}>
+        <div className={`grid gap-6 mx-auto ${isInterviewer ? "max-w-5xl sm:grid-cols-3" : "grid-cols-1 max-w-md"}`}>
 
           {/* Create Room — Interviewer only */}
           {isInterviewer && (
@@ -179,6 +185,24 @@ function Dashboard() {
               </button>
             </div>
           </div>
+
+          {isInterviewer && (
+            <div className="glass rounded-2xl p-7 flex flex-col gap-5 animate-fade-in-up delay-300 group hover:border-blue-500/20 transition-all duration-300">
+              <div className="w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center group-hover:bg-blue-600/30 transition-all duration-300">
+                <svg className="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4V7m3 10H6a2 2 0 01-2-2V5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-white font-semibold text-lg mb-1">Interview History</h3>
+                <p className="text-gray-500 text-sm">Review previous rooms, candidate details, and saved interview notes.</p>
+              </div>
+              <Link to="/history"
+                className="mt-auto w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-blue-900/30 hover:-translate-y-0.5 active:translate-y-0">
+                View History →
+              </Link>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center justify-center gap-10 mt-20 animate-fade-in delay-300">
