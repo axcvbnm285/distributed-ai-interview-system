@@ -26,6 +26,61 @@ const BLANK_FORM = {
   testCases: [{ input: "", expected: "" }],
 };
 
+function renderInlineSummaryText(text) {
+  return text.split(/(\*\*.*?\*\*)/g).filter(Boolean).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
+    }
+
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function SummaryContent({ summary }) {
+  const blocks = summary
+    .split(/\n\s*\n/)
+    .map((block) => block.split("\n").map((line) => line.trim()).filter(Boolean))
+    .filter((lines) => lines.length > 0);
+
+  return (
+    <div className="space-y-4 text-sm text-gray-200">
+      {blocks.map((lines, index) => {
+        const isList = lines.every((line) => line.startsWith("- "));
+
+        if (isList) {
+          return (
+            <ul key={index} className="space-y-1.5 pl-5 list-disc marker:text-violet-400">
+              {lines.map((line, lineIndex) => (
+                <li key={lineIndex} className="leading-relaxed">
+                  {renderInlineSummaryText(line.slice(2))}
+                </li>
+              ))}
+            </ul>
+          );
+        }
+
+        if (lines.length === 1 && /^\*\*.*\*\*$/.test(lines[0])) {
+          return (
+            <h4 key={index} className="text-base font-semibold text-white">
+              {renderInlineSummaryText(lines[0])}
+            </h4>
+          );
+        }
+
+        return (
+          <div key={index} className="space-y-2">
+            {lines.map((line, lineIndex) => (
+              <p key={lineIndex} className="leading-relaxed">
+                {renderInlineSummaryText(line)}
+              </p>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function InterviewRoom() {
   const { roomCode } = useParams();
   const navigate     = useNavigate();
@@ -62,6 +117,10 @@ function InterviewRoom() {
   const [notes, setNotes] = useState("");
   const [notesLoadedForKey, setNotesLoadedForKey] = useState("");
   const [notesRemoteReady, setNotesRemoteReady] = useState(false);
+  const [summary, setSummary] = useState("");
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
+  const [summaryCandidateName, setSummaryCandidateName] = useState("");
 
   // ── output / test ──────────────────────────────────────
   const [outputTab,    setOutputTab]    = useState("tests");
@@ -83,6 +142,10 @@ function InterviewRoom() {
       setNotes("");
       setNotesLoadedForKey("");
       setNotesRemoteReady(false);
+      setSummary("");
+      setSummaryCandidateName("");
+      setSummaryError("");
+      setSummaryLoading(false);
       initialLocalNotesRef.current = "";
       return;
     }
@@ -159,6 +222,43 @@ function InterviewRoom() {
 
     return () => window.clearTimeout(timeoutId);
   }, [canManageNotes, notes, notesLoadedForKey, notesRemoteReady, notesStorageKey, roomCode]);
+
+  const generateSummary = async () => {
+    if (!notes.trim()) {
+      setSummary("");
+      setSummaryCandidateName("");
+      setSummaryError("Add interview notes before generating a summary.");
+      return;
+    }
+
+    const token = localStorage.getItem("token");
+    if (!token) {
+      setSummary("");
+      setSummaryCandidateName("");
+      setSummaryError("You must be signed in to generate a summary.");
+      return;
+    }
+
+    setSummaryLoading(true);
+    setSummaryError("");
+
+    try {
+      const { data } = await api.post(
+        "/ai/summary",
+        { notes, roomCode },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setSummary(data.summary || "");
+      setSummaryCandidateName(data.candidateName || "");
+    } catch (err) {
+      setSummary("");
+      setSummaryCandidateName("");
+      setSummaryError(err.response?.data?.message || "Failed to generate AI summary.");
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
 
   // ── socket ─────────────────────────────────────────────
   useEffect(() => {
@@ -608,10 +708,21 @@ function InterviewRoom() {
           </div>
 
           {canManageNotes && (
+            <>
             <section className="shrink-0 h-52 border-t border-[#2a2a38] bg-[#0d0d12] flex flex-col">
               <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2a38] shrink-0">
                 <h3 className="text-sm font-semibold text-white">Interview Notes</h3>
-                <span className="text-[11px] text-gray-600 font-mono">Private to interviewer</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] text-gray-600 font-mono">Private to interviewer</span>
+                  <button
+                    onClick={generateSummary}
+                    disabled={summaryLoading}
+                    className="flex items-center justify-center gap-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-xs font-semibold px-3 py-1.5 transition-all"
+                  >
+                    {summaryLoading ? <Spinner /> : null}
+                    {summaryLoading ? "Generating..." : "Generate AI Summary"}
+                  </button>
+                </div>
               </div>
               <div className="flex-1 p-4">
                 <textarea
@@ -622,6 +733,42 @@ function InterviewRoom() {
                 />
               </div>
             </section>
+            <section className="shrink-0 border-t border-[#2a2a38] bg-[#0a0a0e]">
+              <div className="px-4 py-3 border-b border-[#2a2a38]">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-white">AI Summary</h3>
+                  {summaryCandidateName && (
+                    <span className="text-[11px] text-gray-500 font-mono">Candidate: {summaryCandidateName}</span>
+                  )}
+                </div>
+              </div>
+              <div className="p-4">
+                {summaryError && (
+                  <div className="mb-4 flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-lg px-3 py-2">
+                    <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {summaryError}
+                  </div>
+                )}
+
+                {summaryLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-violet-400">
+                    <Spinner />
+                    Generating interview summary...
+                  </div>
+                ) : summary ? (
+                  <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3">
+                    <SummaryContent summary={summary} />
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-[#2a2a38] bg-[#11111a]/50 px-4 py-4 text-sm text-gray-500">
+                    Generate a summary from the current interview notes.
+                  </div>
+                )}
+              </div>
+            </section>
+            </>
           )}
 
           {/* ── Output Panel ── */}

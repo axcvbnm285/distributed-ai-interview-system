@@ -43,6 +43,9 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
   const screenStreamRef    = useRef(null);   // screen share stream
   const pcsRef             = useRef({});     // peerId → RTCPeerConnection
   const pendingCandidatesRef = useRef({});
+  const mediaRecorderRef   = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingUrlRef    = useRef(null);
 
   const [callStatus,   setCallStatus]   = useState("idle");    // idle | loading | active | denied | unavailable
   const [camOn,        setCamOn]        = useState(true);
@@ -54,8 +57,121 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
   const [screenRequest,    setScreenRequest]    = useState(false);  // interviewee: received request
   const [requestPending,   setRequestPending]   = useState(false);  // interviewer: waiting for accept
   const [requestDeclined,  setRequestDeclined]  = useState(false);  // interviewer: was declined
+  const [isRecording,      setIsRecording]      = useState(false);
+  const [recordingError,   setRecordingError]   = useState("");
 
   // ── peer connection helpers ──────────────────────────────
+
+  const clearRecordingUrl = useCallback(() => {
+    if (recordingUrlRef.current) {
+      URL.revokeObjectURL(recordingUrlRef.current);
+      recordingUrlRef.current = null;
+    }
+  }, []);
+
+  const buildRecordingStream = useCallback(() => {
+    const combinedStream = new MediaStream();
+    const seenTrackIds = new Set();
+    const activeStreams = [
+      localStreamRef.current,
+      ...Object.values(remoteFeeds).map((feed) => feed?.stream).filter(Boolean),
+    ];
+
+    activeStreams.forEach((stream) => {
+      stream.getTracks().forEach((track) => {
+        if (track.readyState !== "live") return;
+        if (seenTrackIds.has(track.id)) return;
+        seenTrackIds.add(track.id);
+        combinedStream.addTrack(track);
+      });
+    });
+
+    return combinedStream;
+  }, [remoteFeeds]);
+
+  const stopRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    recorder.stop();
+  }, []);
+
+  const startRecording = useCallback(() => {
+    setRecordingError("");
+
+    if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+      setRecordingError("This browser does not support recording.");
+      return;
+    }
+
+    const combinedStream = buildRecordingStream();
+    if (combinedStream.getTracks().length === 0) {
+      setRecordingError("No active local or remote streams are available to record.");
+      return;
+    }
+
+    const mimeTypeCandidates = [
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ];
+
+    const mimeType = mimeTypeCandidates.find((candidate) => MediaRecorder.isTypeSupported?.(candidate)) || "";
+    if (!mimeType) {
+      setRecordingError("This browser cannot generate WebM recordings.");
+      return;
+    }
+
+    clearRecordingUrl();
+    recordingChunksRef.current = [];
+
+    try {
+      const recorder = new MediaRecorder(combinedStream, { mimeType });
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = () => {
+        setRecordingError("Recording failed. Please try again.");
+        setIsRecording(false);
+        mediaRecorderRef.current = null;
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, { type: mimeType });
+        recordingChunksRef.current = [];
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+
+        if (!blob.size) {
+          setRecordingError("Recording finished, but no media was captured.");
+          return;
+        }
+
+        const downloadUrl = URL.createObjectURL(blob);
+        recordingUrlRef.current = downloadUrl;
+
+        const anchor = document.createElement("a");
+        anchor.href = downloadUrl;
+        anchor.download = `interview-recording-${roomCode}-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+
+        window.setTimeout(() => {
+          clearRecordingUrl();
+        }, 1000);
+      };
+
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch {
+      setRecordingError("Unable to start recording on this browser.");
+    }
+  }, [buildRecordingStream, clearRecordingUrl, roomCode]);
 
   const syncPeerConnectionTracks = useCallback(async (pc) => {
     if (!pc) return;
@@ -280,6 +396,7 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
   };
 
   const stopMedia = () => {
+    if (isRecording) stopRecording();
     if (screenSharing) stopScreenShare();
     Object.keys(pcsRef.current).forEach(closePeer);
     localStreamRef.current?.getTracks().forEach(t => t.stop());
@@ -291,6 +408,7 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
     setMicOn(true);
     setRemoteFeeds({});
     setScreenRequest(false);
+    setRecordingError("");
   };
 
   const toggleCam = () => {
@@ -368,13 +486,21 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
   // Cleanup on unload
   useEffect(() => {
     const onUnload = () => {
+      stopRecording();
       localStreamRef.current?.getTracks().forEach(t => t.stop());
       screenStreamRef.current?.getTracks().forEach(t => t.stop());
       socket?.emit("webrtc-leave", { roomCode });
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
-  }, [socket, roomCode]);
+  }, [socket, roomCode, stopRecording]);
+
+  useEffect(() => {
+    return () => {
+      stopRecording();
+      clearRecordingUrl();
+    };
+  }, [clearRecordingUrl, stopRecording]);
 
   // ── render ───────────────────────────────────────────────
 
@@ -422,6 +548,20 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
             <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
           </svg>
           <p className="text-xs text-red-400">Screen share was declined.</p>
+        </div>
+      )}
+      {isInterviewer && recordingError && (
+        <div className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-2.5 animate-fade-in">
+          <svg className="w-4 h-4 text-yellow-400 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.93c.75 1.334-.213 2.971-1.742 2.971H4.42c-1.53 0-2.492-1.637-1.743-2.97l5.58-9.93zM11 13a1 1 0 10-2 0 1 1 0 002 0zm-1-6a1 1 0 00-1 1v3a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+          </svg>
+          <p className="text-xs text-yellow-300">{recordingError}</p>
+        </div>
+      )}
+      {isInterviewer && isRecording && (
+        <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2.5 animate-fade-in">
+          <span className="text-xs text-red-400 font-semibold">🔴 Recording...</span>
+          <p className="text-xs text-red-300">Recording local and remote call streams.</p>
         </div>
       )}
 
@@ -539,13 +679,30 @@ function Webcam({ username = "You", roomCode, socket, role = "INTERVIEWEE" }) {
 
       {/* ── Screen share button — Interviewer only ── */}
       {isInterviewer && callStatus === "active" && (
-        <button
-          onClick={requestScreenShare}
-          disabled={requestPending}
-          className="w-full flex items-center justify-center gap-2 bg-violet-600/15 hover:bg-violet-600/25 border border-violet-500/30 disabled:opacity-50 disabled:cursor-not-allowed text-violet-400 text-xs font-semibold py-2 rounded-lg transition-all">
-          <ScreenIcon className="w-3.5 h-3.5" />
-          {requestPending ? "Request sent..." : "Request Screen Share"}
-        </button>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <button
+            onClick={requestScreenShare}
+            disabled={requestPending}
+            className="w-full flex items-center justify-center gap-2 bg-violet-600/15 hover:bg-violet-600/25 border border-violet-500/30 disabled:opacity-50 disabled:cursor-not-allowed text-violet-400 text-xs font-semibold py-2 rounded-lg transition-all">
+            <ScreenIcon className="w-3.5 h-3.5" />
+            {requestPending ? "Request sent..." : "Request Screen Share"}
+          </button>
+          {!isRecording ? (
+            <button
+              onClick={startRecording}
+              className="w-full flex items-center justify-center gap-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 text-xs font-semibold py-2 rounded-lg transition-all">
+              <RecordIcon />
+              Start Recording
+            </button>
+          ) : (
+            <button
+              onClick={stopRecording}
+              className="w-full flex items-center justify-center gap-2 bg-red-500 hover:bg-red-400 border border-red-400/50 text-white text-xs font-semibold py-2 rounded-lg transition-all">
+              <StopIcon />
+              Stop Recording
+            </button>
+          )}
+        </div>
       )}
 
       {/* ── Remote feeds ── */}
@@ -620,6 +777,22 @@ function PhoneOffIcon() {
   return (
     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+    </svg>
+  );
+}
+
+function RecordIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+      <circle cx="10" cy="10" r="5.5" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+      <rect x="5" y="5" width="10" height="10" rx="1.5" />
     </svg>
   );
 }
