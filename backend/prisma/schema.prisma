@@ -12,6 +12,7 @@ model User {
   name      String
   email     String   @unique
   password  String
+  role      String   @default("INTERVIEWEE")
 
   createdAt DateTime @default(now())
 
@@ -29,6 +30,7 @@ model Room {
 
   interviewer   User @relation(fields: [interviewerId], references: [id])
 
+  notes         String   @default("")
   status        String   @default("ACTIVE")
 
   createdAt     DateTime @default(now())

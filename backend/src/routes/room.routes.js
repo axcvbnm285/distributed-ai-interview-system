@@ -1,27 +1,24 @@
 const express = require("express");
-const authMiddleware =
-require("../middleware/auth.middleware");
-
+const { authMiddleware, interviewerOnly } = require("../middleware/auth.middleware");
 const {
   createRoom,
   getRoom,
   joinRoom,
-  getParticipants
+  getParticipants,
+  getInterviewHistory,
+  getRoomNotes,
+  updateRoomNotes,
 } = require("../controllers/roomController");
 
 const router = express.Router();
 
-router.post("/",authMiddleware, createRoom);
-router.get("/:roomCode", authMiddleware, getRoom);
-router.post(
-  "/:roomCode/join",
-  authMiddleware,
-  joinRoom
-);
-router.get(
-  "/:roomCode/participants",
-  authMiddleware,
-  getParticipants
-);
+// Only INTERVIEWER can create a room
+router.post("/",                    authMiddleware, interviewerOnly, createRoom);
+router.get("/history",              authMiddleware, interviewerOnly, getInterviewHistory);
+router.get("/:roomCode",            authMiddleware, getRoom);
+router.post("/:roomCode/join",      authMiddleware, joinRoom);
+router.get("/:roomCode/participants", authMiddleware, getParticipants);
+router.get("/:roomCode/notes",      authMiddleware, interviewerOnly, getRoomNotes);
+router.put("/:roomCode/notes",      authMiddleware, interviewerOnly, updateRoomNotes);
 
 module.exports = router;

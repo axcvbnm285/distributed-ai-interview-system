@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Room" ADD COLUMN "notes" TEXT NOT NULL DEFAULT '';
