@@ -26,6 +26,117 @@ const BLANK_FORM = {
   testCases: [{ input: "", expected: "" }],
 };
 
+function extractAiSection(text, sectionName, nextSectionNames) {
+  const nextPattern = nextSectionNames.length > 0 ? `(?=\\n(?:${nextSectionNames.join("|")}):|$)` : "$";
+  const match = text.match(new RegExp(`${sectionName}:\\s*([\\s\\S]*?)${nextPattern}`, "i"));
+  return match?.[1]?.trim() || "";
+}
+
+function parseAiTestCases(text) {
+  const matches = [...text.matchAll(/(?:^|\n)\s*\d+\.\s*\n?\s*Input:\s*([\s\S]*?)\n\s*Expected Output:\s*([\s\S]*?)(?=(?:\n\s*\d+\.\s*\n?\s*Input:)|$)/g)];
+
+  if (matches.length > 0) {
+    return matches
+      .map((match) => ({
+        input: match[1].trim(),
+        expected: match[2].trim(),
+      }))
+      .filter((testCase) => testCase.input || testCase.expected);
+  }
+
+  const sampleInput = extractAiSection(text, "Sample Input", [
+    "Sample Output",
+    "Starter Code",
+    "Test Cases",
+  ]);
+  const sampleOutput = extractAiSection(text, "Sample Output", [
+    "Starter Code",
+    "Test Cases",
+  ]);
+
+  if (sampleInput || sampleOutput) {
+    return [{ input: sampleInput, expected: sampleOutput }];
+  }
+
+  return BLANK_FORM.testCases;
+}
+
+function parseAiQuestionToForm(text, fallbackDifficulty, fallbackTopic) {
+  const title = extractAiSection(text, "Title", [
+    "Description",
+    "Constraints",
+    "Sample Input",
+    "Sample Output",
+    "Starter Code",
+    "Test Cases",
+  ]);
+  const description = extractAiSection(text, "Description", [
+    "Constraints",
+    "Sample Input",
+    "Sample Output",
+    "Starter Code",
+    "Test Cases",
+  ]);
+  const constraints = extractAiSection(text, "Constraints", [
+    "Sample Input",
+    "Sample Output",
+    "Starter Code",
+    "Test Cases",
+  ]);
+  const sampleInput = extractAiSection(text, "Sample Input", [
+    "Sample Output",
+    "Starter Code",
+    "Test Cases",
+  ]);
+  const sampleOutput = extractAiSection(text, "Sample Output", [
+    "Starter Code",
+    "Test Cases",
+  ]);
+  const starterCode = extractAiSection(text, "Starter Code", ["Test Cases"]);
+
+  const builtDescription = [
+    description,
+    constraints ? `Constraints:\n${constraints}` : "",
+    sampleInput ? `Sample Input:\n${sampleInput}` : "",
+    sampleOutput ? `Sample Output:\n${sampleOutput}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    title: title || `${fallbackTopic || "AI Generated"} Question`,
+    difficulty: fallbackDifficulty || "Easy",
+    description: builtDescription || text.trim(),
+    starterCode: starterCode || PYTHON_BOILERPLATE,
+    testCases: parseAiTestCases(text),
+  };
+}
+
+function buildQuestionContext(question) {
+  if (!question) return "";
+
+  const lines = [
+    `Title: ${question.title || "Untitled"}`,
+    `Difficulty: ${question.difficulty || "Not specified"}`,
+    "Description:",
+    question.description || "",
+  ];
+
+  const examples = (question.testCases || []).slice(0, 3);
+  if (examples.length > 0) {
+    lines.push("", "Examples:");
+    examples.forEach((testCase, index) => {
+      lines.push(`Case ${index + 1} Input:`);
+      lines.push(testCase.input || "(empty)");
+      lines.push("Expected Output:");
+      lines.push(testCase.expected || "(empty)");
+      lines.push("");
+    });
+  }
+
+  return lines.join("\n").trim();
+}
+
 function renderInlineSummaryText(text) {
   return text.split(/(\*\*.*?\*\*)/g).filter(Boolean).map((part, index) => {
     if (part.startsWith("**") && part.endsWith("**")) {
@@ -121,6 +232,22 @@ function InterviewRoom() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState("");
   const [summaryCandidateName, setSummaryCandidateName] = useState("");
+
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiQuestionError, setAiQuestionError] = useState("");
+  const [aiReview, setAiReview] = useState("");
+  const [aiReviewError, setAiReviewError] = useState("");
+  const [aiHint, setAiHint] = useState("");
+  const [aiHintError, setAiHintError] = useState("");
+
+  const [topic, setTopic] = useState("");
+  const [difficulty, setDifficulty] = useState("Easy");
+
+  const [aiLoading, setAiLoading] = useState({
+    question: false,
+    review: false,
+    hint: false,
+  });
 
   // ── output / test ──────────────────────────────────────
   const [outputTab,    setOutputTab]    = useState("tests");
@@ -260,6 +387,132 @@ function InterviewRoom() {
     }
   };
 
+  const getAiRequestConfig = () => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      throw new Error("You must be signed in to use AI tools.");
+    }
+
+    return {
+      headers: { Authorization: `Bearer ${token}` },
+    };
+  };
+
+  const setAiLoadingState = (key, value) => {
+    setAiLoading((current) => ({ ...current, [key]: value }));
+  };
+
+  const clearQuestionAiOutputs = () => {
+    setAiHint("");
+    setAiHintError("");
+    setAiReview("");
+    setAiReviewError("");
+  };
+
+  const generateHint = async () => {
+    if (!question) {
+      setAiHint("");
+      setAiHintError("Select a question before requesting a hint.");
+      return;
+    }
+
+    if (!code.trim()) {
+      setAiHint("");
+      setAiHintError("Write some code before requesting a hint.");
+      return;
+    }
+
+    setAiLoadingState("hint", true);
+    setAiHintError("");
+
+    try {
+      const { data } = await api.post(
+        "/ai/hint",
+        {
+          question: buildQuestionContext(question),
+          code,
+        },
+        getAiRequestConfig()
+      );
+
+      setAiHint(data.hint || "");
+    } catch (err) {
+      setAiHint("");
+      setAiHintError(err.response?.data?.message || err.message || "Failed to generate AI hint.");
+    } finally {
+      setAiLoadingState("hint", false);
+    }
+  };
+
+  const reviewCodeWithAI = async () => {
+    if (!question) {
+      setAiReview("");
+      setAiReviewError("Select a question before requesting an AI review.");
+      return;
+    }
+
+    if (!code.trim()) {
+      setAiReview("");
+      setAiReviewError("Write some code before requesting an AI review.");
+      return;
+    }
+
+    setAiLoadingState("review", true);
+    setAiReviewError("");
+
+    try {
+      const { data } = await api.post(
+        "/ai/review-code",
+        {
+          question: buildQuestionContext(question),
+          code,
+          language: LANGUAGE,
+        },
+        getAiRequestConfig()
+      );
+
+      setAiReview(data.review || "");
+    } catch (err) {
+      setAiReview("");
+      setAiReviewError(err.response?.data?.message || err.message || "Failed to generate AI review.");
+    } finally {
+      setAiLoadingState("review", false);
+    }
+  };
+
+  const generateAiQuestion = async () => {
+    if (!topic.trim()) {
+      setAiQuestion("");
+      setAiQuestionError("Enter a topic before generating a question.");
+      return;
+    }
+
+    setAiLoadingState("question", true);
+    setAiQuestionError("");
+
+    try {
+      const { data } = await api.post(
+        "/ai/generate-question",
+        {
+          topic,
+          difficulty,
+          language: LANGUAGE,
+        },
+        getAiRequestConfig()
+      );
+
+      const generatedQuestionText = data.question || "";
+      setAiQuestion(generatedQuestionText);
+      setForm(parseAiQuestionToForm(generatedQuestionText, difficulty, topic.trim()));
+      setFormSent(false);
+    } catch (err) {
+      setAiQuestion("");
+      setAiQuestionError(err.response?.data?.message || err.message || "Failed to generate question.");
+    } finally {
+      setAiLoadingState("question", false);
+    }
+  };
+
   // ── socket ─────────────────────────────────────────────
   useEffect(() => {
     socket.emit("join-room", {
@@ -272,6 +525,7 @@ function InterviewRoom() {
     socket.on("question-update", (q) => {
       setQuestion(q);
       setCode(q.starterCode || PYTHON_BOILERPLATE);
+      clearQuestionAiOutputs();
       setTestResults([]);
       setConsoleOut("");
       setActiveCase(0);
@@ -294,6 +548,7 @@ function InterviewRoom() {
   const selectQuestion = (q) => {
     setQuestion(q);
     setCode(q.starterCode || PYTHON_BOILERPLATE);
+    clearQuestionAiOutputs();
     setTestResults([]);
     setConsoleOut("");
     setActiveCase(0);
@@ -306,6 +561,7 @@ function InterviewRoom() {
     const q  = { ...form, testCases: tc };
     setQuestion(q);
     setCode(q.starterCode || PYTHON_BOILERPLATE);
+    clearQuestionAiOutputs();
     setTestResults([]);
     setConsoleOut("");
     setActiveCase(0);
@@ -443,6 +699,26 @@ function InterviewRoom() {
           <div className="flex items-center gap-1.5 bg-blue-500/10 border border-blue-500/20 rounded-lg px-3 py-1.5">
             <span className="text-xs text-blue-400 font-semibold">🐍 Python</span>
           </div>
+          <button onClick={generateHint} disabled={running || runningTests || aiLoading.hint || !question}
+            className="flex items-center gap-1.5 bg-[#1e1e2a] hover:bg-[#2a2a38] border border-[#2a2a38] disabled:opacity-50 disabled:cursor-not-allowed text-violet-300 text-sm font-semibold px-4 py-1.5 rounded-lg transition-all">
+            {aiLoading.hint ? <Spinner /> : (
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M9.09 9a3 3 0 115.82 1c0 2-3 3-3 3" />
+              </svg>
+            )}
+            AI Hint
+          </button>
+          {canManageNotes && (
+            <button onClick={reviewCodeWithAI} disabled={running || runningTests || aiLoading.review || !question}
+              className="flex items-center gap-1.5 bg-[#1e1e2a] hover:bg-[#2a2a38] border border-[#2a2a38] disabled:opacity-50 disabled:cursor-not-allowed text-cyan-300 text-sm font-semibold px-4 py-1.5 rounded-lg transition-all">
+              {aiLoading.review ? <Spinner /> : (
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h3m5 3H7a2 2 0 01-2-2V7a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V17a2 2 0 01-2 2z" />
+                </svg>
+              )}
+              AI Review
+            </button>
+          )}
           <button onClick={runCode} disabled={running || runningTests}
             className="flex items-center gap-1.5 bg-[#1e1e2a] hover:bg-[#2a2a38] border border-[#2a2a38] disabled:opacity-50 disabled:cursor-not-allowed text-gray-300 text-sm font-semibold px-4 py-1.5 rounded-lg transition-all">
             {running ? <Spinner /> : (
@@ -566,6 +842,58 @@ function InterviewRoom() {
           {activeTab === "add" && isInterviewer && (
             <div className="flex flex-col flex-1 overflow-y-auto">
               <div className="p-4 space-y-3">
+                <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">AI Question Generator</p>
+                    <span className="text-[10px] text-gray-600">Interviewer only</span>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-gray-600 block mb-1">Topic</label>
+                    <input value={topic} onChange={e => setTopic(e.target.value)}
+                      placeholder="e.g. Sliding Window"
+                      className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs placeholder-gray-700 focus:outline-none focus:border-violet-500 transition-all" />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-gray-600 block mb-1">Difficulty</label>
+                      <select value={difficulty} onChange={e => setDifficulty(e.target.value)}
+                        className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-lg px-3 py-2 text-white text-xs focus:outline-none focus:border-violet-500 cursor-pointer transition-all">
+                        <option>Easy</option><option>Medium</option><option>Hard</option>
+                      </select>
+                    </div>
+                    <div className="flex items-end">
+                      <button onClick={generateAiQuestion}
+                        disabled={aiLoading.question || !topic.trim()}
+                        className="w-full flex items-center justify-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900 disabled:cursor-not-allowed text-white text-xs font-semibold py-2 rounded-lg transition-all">
+                        {aiLoading.question ? <Spinner /> : null}
+                        {aiLoading.question ? "Generating..." : "Generate Question"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {aiQuestionError && (
+                    <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-lg px-3 py-2">
+                      <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      {aiQuestionError}
+                    </div>
+                  )}
+
+                  {aiQuestion && (
+                    <>
+                      <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-300">
+                        Generated question loaded into the form below. You can edit it and then broadcast it to the room.
+                      </div>
+                      <div className="rounded-lg border border-[#2a2a38] bg-[#0f0f13] px-3 py-3">
+                        <pre className="text-xs text-gray-200 whitespace-pre-wrap leading-relaxed">{aiQuestion}</pre>
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-between mb-1">
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Custom Question</p>
                   <button onClick={resetForm} className="text-xs text-gray-600 hover:text-gray-400 transition-colors">Reset</button>
@@ -707,6 +1035,34 @@ function InterviewRoom() {
             }} />
           </div>
 
+          {(aiLoading.hint || aiHint || aiHintError) && (
+            <section className="shrink-0 border-t border-[#2a2a38] bg-[#0d0d12]">
+              <div className="px-4 py-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-violet-400">AI Hint</span>
+                </div>
+
+                {aiHintError ? (
+                  <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-lg px-3 py-2">
+                    <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {aiHintError}
+                  </div>
+                ) : aiLoading.hint ? (
+                  <div className="flex items-center gap-2 text-sm text-violet-400">
+                    <Spinner />
+                    Generating hint...
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3">
+                    <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{aiHint}</p>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
           {canManageNotes && (
             <>
             <section className="shrink-0 h-52 border-t border-[#2a2a38] bg-[#0d0d12] flex flex-col">
@@ -768,6 +1124,32 @@ function InterviewRoom() {
                 )}
               </div>
             </section>
+            {(aiLoading.review || aiReview || aiReviewError) && (
+              <section className="shrink-0 border-t border-[#2a2a38] bg-[#0a0a0e]">
+                <div className="px-4 py-3 border-b border-[#2a2a38]">
+                  <h3 className="text-sm font-semibold text-white">AI Code Review</h3>
+                </div>
+                <div className="p-4">
+                  {aiReviewError ? (
+                    <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-lg px-3 py-2">
+                      <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      {aiReviewError}
+                    </div>
+                  ) : aiLoading.review ? (
+                    <div className="flex items-center gap-2 text-sm text-cyan-400">
+                      <Spinner />
+                      Reviewing current solution...
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3">
+                      <pre className="text-sm text-gray-200 whitespace-pre-wrap leading-relaxed">{aiReview}</pre>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
             </>
           )}
 
