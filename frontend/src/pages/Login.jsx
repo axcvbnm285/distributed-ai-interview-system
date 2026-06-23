@@ -17,7 +17,7 @@ function Login() {
     setLoading(true);
     setError("");
     try {
-      const response = await api.post("/auth/login", { email, password });
+      const response = await api.post("/auth/login", { email: email.trim(), password });
       localStorage.setItem("token", response.data.token);
       localStorage.setItem("user",  JSON.stringify(response.data.user));
       navigate("/dashboard");
@@ -82,7 +82,12 @@ function Login() {
             </div>
 
             <div>
-              <label className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2 block">Password</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-medium text-gray-400 uppercase tracking-wider block">Password</label>
+                <Link to="/forgot-password" className="text-xs text-violet-400 hover:text-violet-300 transition-colors">
+                  Forgot password?
+                </Link>
+              </div>
               <input type="password" placeholder="••••••••" value={password}
                 onChange={e => setPassword(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && handleLogin()}

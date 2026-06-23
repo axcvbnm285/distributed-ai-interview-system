@@ -4,6 +4,8 @@ import Register     from "./pages/Register";
 import Dashboard    from "./pages/Dashboard";
 import InterviewRoom from "./pages/InterviewRoom";
 import InterviewHistory from "./pages/InterviewHistory";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 
 function App() {
   return (
@@ -11,6 +13,8 @@ function App() {
       <Routes>
         <Route path="/"          element={<Login />} />
         <Route path="/register"  element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/history"   element={<InterviewHistory />} />
         <Route path="/room/:roomCode" element={<InterviewRoom />} />

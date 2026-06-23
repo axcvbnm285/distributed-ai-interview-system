@@ -8,18 +8,24 @@ function Register() {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
 
+  const isStrongPassword = (value) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/.test(value);
+
   const set = (k, v) => { setForm(f => ({ ...f, [k]: v })); setError(""); };
 
   const handleRegister = async () => {
     if (!form.name || !form.email || !form.password || !form.role) {
       setError("All fields are required."); return;
     }
-    if (form.password.length < 6) {
-      setError("Password must be at least 6 characters."); return;
+    if (!isStrongPassword(form.password)) {
+      setError("Password must be at least 8 characters and include uppercase, lowercase, and a number."); return;
     }
     setLoading(true);
     try {
-      await api.post("/auth/register", form);
+      await api.post("/auth/register", {
+        ...form,
+        name: form.name.trim(),
+        email: form.email.trim(),
+      });
       navigate("/", { state: { registered: true } });
     } catch (err) {
       setError(err.response?.data?.message || "Registration failed.");
@@ -144,12 +150,13 @@ function Register() {
               <label className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2 block">Password</label>
               <input
                 type="password"
-                placeholder="Min. 6 characters"
+                placeholder="Min. 8 chars, Aa1..."
                 value={form.password}
                 onChange={e => set("password", e.target.value)}
                 onKeyDown={e => e.key === "Enter" && handleRegister()}
                 className="w-full bg-[#0f0f13] border border-[#2a2a38] rounded-xl px-4 py-3 text-white text-sm placeholder-gray-600 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/50 transition-all duration-200"
               />
+              <p className="mt-2 text-[11px] text-gray-600">Use at least 8 characters with uppercase, lowercase, and a number.</p>
             </div>
 
             <button

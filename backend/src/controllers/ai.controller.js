@@ -56,6 +56,32 @@ function normalizeText(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+async function findOwnedRoom(roomCode, interviewerId, include = {}) {
+  return prisma.room.findFirst({
+    where: {
+      roomCode,
+      interviewerId,
+    },
+    include,
+  });
+}
+
+async function findParticipantRoom(roomCode, userId) {
+  return prisma.room.findFirst({
+    where: {
+      roomCode,
+      participants: {
+        some: {
+          userId,
+        },
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+}
+
 function buildPrompt({ candidateName, notes }) {
   return `You are a senior technical interviewer.
 
@@ -180,20 +206,14 @@ exports.generateInterviewSummary = async (req, res) => {
       return res.status(503).json({ message: "GROQ_API_KEY is not configured." });
     }
 
-    const room = await prisma.room.findFirst({
-      where: {
-        roomCode,
-        interviewerId: req.user.userId,
-      },
-      include: {
-        participants: {
-          orderBy: { joinedAt: "asc" },
-          include: {
-            user: {
-              select: {
-                name: true,
-                role: true,
-              },
+    const room = await findOwnedRoom(roomCode, req.user.userId, {
+      participants: {
+        orderBy: { joinedAt: "asc" },
+        include: {
+          user: {
+            select: {
+              name: true,
+              role: true,
             },
           },
         },
@@ -212,6 +232,13 @@ exports.generateInterviewSummary = async (req, res) => {
       prompt: buildPrompt({ candidateName, notes }),
       temperature: 0.3,
       maxCompletionTokens: 600,
+    });
+
+    await prisma.room.update({
+      where: { id: room.id },
+      data: {
+        aiSummary: summary,
+      },
     });
 
     return res.json({ summary, candidateName });
@@ -246,6 +273,7 @@ exports.reviewCode = async (req, res) => {
     const question = normalizeText(req.body?.question);
     const code = typeof req.body?.code === "string" ? req.body.code : "";
     const language = normalizeText(req.body?.language) || "python";
+    const roomCode = normalizeText(req.body?.roomCode);
 
     if (!question) {
       return res.status(400).json({ message: "question is required." });
@@ -262,6 +290,20 @@ exports.reviewCode = async (req, res) => {
       maxCompletionTokens: 800,
     });
 
+    if (roomCode) {
+      const room = await findOwnedRoom(roomCode, req.user.userId);
+      if (!room) {
+        return res.status(404).json({ message: "Room not found." });
+      }
+
+      await prisma.room.update({
+        where: { id: room.id },
+        data: {
+          latestAiReview: review,
+        },
+      });
+    }
+
     return res.json({ review });
   } catch (error) {
     return sendAiError(res, error, "Failed to review code.");
@@ -271,6 +313,7 @@ exports.generateHint = async (req, res) => {
   try {
     const question = normalizeText(req.body?.question);
     const code = typeof req.body?.code === "string" ? req.body.code : "";
+    const roomCode = normalizeText(req.body?.roomCode);
 
     if (!question) {
       return res.status(400).json({ message: "question is required." });
@@ -287,7 +330,30 @@ exports.generateHint = async (req, res) => {
       maxCompletionTokens: 180,
     });
 
-    return res.json({ hint });
+    let hintCount;
+
+    if (roomCode && req.user?.role === "INTERVIEWEE") {
+      const room = await findParticipantRoom(roomCode, req.user.userId);
+
+      if (room) {
+        const updatedRoom = await prisma.room.update({
+          where: { id: room.id },
+          data: {
+            latestHint: hint,
+            hintCount: {
+              increment: 1,
+            },
+          },
+          select: {
+            hintCount: true,
+          },
+        });
+
+        hintCount = updatedRoom.hintCount;
+      }
+    }
+
+    return res.json({ hint, hintCount });
   } catch (error) {
     return sendAiError(res, error, "Failed to generate hint.");
   }

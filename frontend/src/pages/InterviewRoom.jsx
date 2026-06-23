@@ -20,6 +20,8 @@ const PYTHON_BOILERPLATE =
   "\n" +
   "# write your solution here\n";
 
+const WAITING_CODE = "# Waiting for the interviewer to load a question...\n";
+
 const BLANK_FORM = {
   title: "", difficulty: "Easy", description: "",
   starterCode: PYTHON_BOILERPLATE,
@@ -192,12 +194,39 @@ function SummaryContent({ summary }) {
   );
 }
 
+function formatInsightDate(value) {
+  if (!value) return "Unknown";
+
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function QuestionSourceBadge({ source }) {
+  const normalizedSource = String(source || "MANUAL").toUpperCase();
+
+  const className = normalizedSource === "AI"
+    ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-300"
+    : normalizedSource === "BUILTIN"
+      ? "bg-amber-500/10 border-amber-500/20 text-amber-300"
+      : "bg-slate-500/10 border-slate-500/20 text-slate-300";
+
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${className}`}>
+      {normalizedSource}
+    </span>
+  );
+}
+
 function InterviewRoom() {
   const { roomCode } = useParams();
   const navigate     = useNavigate();
 
   // Role comes from localStorage (set at login from DB)
   const currentUser  = JSON.parse(localStorage.getItem("user") || "{}");
+  const currentUserId = currentUser.id;
+  const currentUserName = currentUser.name || "";
   const role         = currentUser.role || "INTERVIEWEE"; // "INTERVIEWER" | "INTERVIEWEE"
   const isInterviewer = role === "INTERVIEWER";
   const normalizedRole = String(role || "").toLowerCase();
@@ -213,7 +242,7 @@ function InterviewRoom() {
   const [participants, setParticipants] = useState([]);
 
   // ── editor ─────────────────────────────────────────────
-  const [code,     setCode]     = useState("# Waiting for the interviewer to load a question...\n");
+  const [code,     setCode]     = useState(WAITING_CODE);
   const [question, setQuestion] = useState(null);
 
   // ── left panel ─────────────────────────────────────────
@@ -232,6 +261,9 @@ function InterviewRoom() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState("");
   const [summaryCandidateName, setSummaryCandidateName] = useState("");
+  const [hintCount, setHintCount] = useState(0);
+  const [askedQuestions, setAskedQuestions] = useState([]);
+  const [insightsError, setInsightsError] = useState("");
 
   const [aiQuestion, setAiQuestion] = useState("");
   const [aiQuestionError, setAiQuestionError] = useState("");
@@ -266,6 +298,7 @@ function InterviewRoom() {
 
   useEffect(() => {
     if (!canManageNotes) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setNotes("");
       setNotesLoadedForKey("");
       setNotesRemoteReady(false);
@@ -273,6 +306,9 @@ function InterviewRoom() {
       setSummaryCandidateName("");
       setSummaryError("");
       setSummaryLoading(false);
+      setHintCount(0);
+      setAskedQuestions([]);
+      setInsightsError("");
       initialLocalNotesRef.current = "";
       return;
     }
@@ -285,6 +321,38 @@ function InterviewRoom() {
   }, [canManageNotes, notesStorageKey]);
 
   useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    let ignore = false;
+
+    const loadRoomSnapshot = async () => {
+      try {
+        const { data } = await api.get(`/rooms/${roomCode}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (ignore || !data.latestQuestion) return;
+
+        setQuestion((currentQuestion) => currentQuestion || data.latestQuestion);
+        setCode((currentCode) => {
+          if (currentCode !== WAITING_CODE) return currentCode;
+          return data.latestQuestion.starterCode || PYTHON_BOILERPLATE;
+        });
+        setQuestionView("detail");
+      } catch {
+        // Socket updates remain the primary source of live room state.
+      }
+    };
+
+    loadRoomSnapshot();
+
+    return () => {
+      ignore = true;
+    };
+  }, [roomCode]);
+
+  useEffect(() => {
     if (!canManageNotes || notesLoadedForKey !== notesStorageKey) return;
     localStorage.setItem(notesStorageKey, notes);
   }, [canManageNotes, notes, notesLoadedForKey, notesStorageKey]);
@@ -294,6 +362,7 @@ function InterviewRoom() {
 
     const token = localStorage.getItem("token");
     if (!token) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setNotesRemoteReady(true);
       return;
     }
@@ -313,6 +382,12 @@ function InterviewRoom() {
           if (currentNotes.trim()) return currentNotes;
           return data.notes || "";
         });
+        setSummary((currentSummary) => currentSummary || data.aiSummary || "");
+        setAiReview((currentReview) => currentReview || data.latestAiReview || "");
+        setSummaryCandidateName((currentName) => currentName || data.interviewees?.[0]?.name || "");
+        setHintCount(typeof data.hintCount === "number" ? data.hintCount : 0);
+        setAskedQuestions(Array.isArray(data.questionsAsked) ? data.questionsAsked : []);
+        setInsightsError("");
       } catch {
         // Local notes remain the fallback source if the room note request fails.
       } finally {
@@ -402,6 +477,26 @@ function InterviewRoom() {
     setAiLoading((current) => ({ ...current, [key]: value }));
   };
 
+  const persistAskedQuestion = async (nextQuestion, source) => {
+    try {
+      const { data } = await api.post(
+        `/rooms/${roomCode}/questions`,
+        {
+          question: nextQuestion,
+          source,
+        },
+        getAiRequestConfig()
+      );
+
+      if (data.question) {
+        setAskedQuestions((currentQuestions) => [data.question, ...currentQuestions]);
+      }
+      setInsightsError("");
+    } catch (err) {
+      setInsightsError(err.response?.data?.message || "Question was shared, but saving it to interview history failed.");
+    }
+  };
+
   const clearQuestionAiOutputs = () => {
     setAiHint("");
     setAiHintError("");
@@ -431,11 +526,15 @@ function InterviewRoom() {
         {
           question: buildQuestionContext(question),
           code,
+          roomCode,
         },
         getAiRequestConfig()
       );
 
       setAiHint(data.hint || "");
+      if (typeof data.hintCount === "number") {
+        setHintCount(data.hintCount);
+      }
     } catch (err) {
       setAiHint("");
       setAiHintError(err.response?.data?.message || err.message || "Failed to generate AI hint.");
@@ -467,6 +566,7 @@ function InterviewRoom() {
           question: buildQuestionContext(question),
           code,
           language: LANGUAGE,
+          roomCode,
         },
         getAiRequestConfig()
       );
@@ -517,8 +617,8 @@ function InterviewRoom() {
   useEffect(() => {
     socket.emit("join-room", {
       roomCode,
-      username: currentUser.name,
-      userId:   currentUser.id,
+      username: currentUserName,
+      userId:   currentUserId,
       role,                          // send role so server registers it correctly
     });
 
@@ -542,7 +642,7 @@ function InterviewRoom() {
       socket.off("participants-update");
       socket.off("receive-message");
     };
-  }, [roomCode]);
+  }, [currentUserId, currentUserName, role, roomCode]);
 
   // ── question actions (interviewer only) ───────────────
   const selectQuestion = (q) => {
@@ -554,6 +654,7 @@ function InterviewRoom() {
     setActiveCase(0);
     setQuestionView("detail");
     socket.emit("question-change", { roomCode, question: q });
+    void persistAskedQuestion(q, "BUILTIN");
   };
 
   const broadcastCustomQuestion = () => {
@@ -569,6 +670,7 @@ function InterviewRoom() {
     socket.emit("question-change", { roomCode, question: q });
     setActiveTab("question");
     setQuestionView("detail");
+    void persistAskedQuestion(q, aiQuestion ? "AI" : "MANUAL");
   };
 
   // ── form helpers ───────────────────────────────────────
@@ -579,7 +681,12 @@ function InterviewRoom() {
   };
   const addTestCase    = () => setForm(f => ({ ...f, testCases: [...f.testCases, { input: "", expected: "" }] }));
   const removeTestCase = (i) => setForm(f => ({ ...f, testCases: f.testCases.filter((_, idx) => idx !== i) }));
-  const resetForm      = () => { setForm(BLANK_FORM); setFormSent(false); };
+  const resetForm      = () => {
+    setForm(BLANK_FORM);
+    setFormSent(false);
+    setAiQuestion("");
+    setAiQuestionError("");
+  };
 
   // ── run (console, auto-feeds first test case) ─────────
   const runCode = async () => {
@@ -1087,6 +1194,66 @@ function InterviewRoom() {
                   placeholder={"Strong in Trees\nWeak in Dynamic Programming\nGood Communication"}
                   className="w-full h-full resize-none rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-violet-500 transition-all"
                 />
+              </div>
+            </section>
+            <section className="shrink-0 border-t border-[#2a2a38] bg-[#0a0a0e]">
+              <div className="px-4 py-3 border-b border-[#2a2a38]">
+                <h3 className="text-sm font-semibold text-white">Candidate Insights</h3>
+              </div>
+              <div className="p-4 space-y-4">
+                {insightsError && (
+                  <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs rounded-lg px-3 py-2">
+                    <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {insightsError}
+                  </div>
+                )}
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-wider text-gray-500">Hints Used</p>
+                    <p className="mt-2 text-2xl font-semibold text-violet-300">{hintCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-wider text-gray-500">Questions Asked</p>
+                    <p className="mt-2 text-2xl font-semibold text-cyan-300">{askedQuestions.length}</p>
+                  </div>
+                </div>
+
+                {askedQuestions.length > 0 ? (
+                  <div className="rounded-xl border border-[#2a2a38] bg-[#11111a] px-4 py-3">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">Recent Questions</p>
+                      <span className="text-[11px] text-gray-600">Newest first</span>
+                    </div>
+                    <div className="space-y-3">
+                      {askedQuestions.slice(0, 3).map((askedQuestion) => (
+                        <div key={askedQuestion.id || `${askedQuestion.title}-${askedQuestion.askedAt}`} className="rounded-xl border border-[#2a2a38] bg-[#0f0f13] px-3 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-white">{askedQuestion.title}</p>
+                              <p className="mt-1 text-xs text-gray-500">{formatInsightDate(askedQuestion.askedAt)}</p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${DIFFICULTY_COLOR[askedQuestion.difficulty] || ""}`}>
+                                {askedQuestion.difficulty || "Easy"}
+                              </span>
+                              <QuestionSourceBadge source={askedQuestion.source} />
+                            </div>
+                          </div>
+                          {askedQuestion.description && (
+                            <p className="mt-3 text-xs text-gray-400 whitespace-pre-line">{askedQuestion.description}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-[#2a2a38] bg-[#11111a]/50 px-4 py-4 text-sm text-gray-500">
+                    The question history will appear here after you assign problems in this room.
+                  </div>
+                )}
               </div>
             </section>
             <section className="shrink-0 border-t border-[#2a2a38] bg-[#0a0a0e]">

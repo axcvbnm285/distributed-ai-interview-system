@@ -8,11 +8,13 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  email     String   @unique
-  password  String
-  role      String   @default("INTERVIEWEE")
+  id                     Int       @id @default(autoincrement())
+  name                   String
+  email                  String    @unique
+  password               String
+  role                   String    @default("INTERVIEWEE")
+  passwordResetTokenHash String?
+  passwordResetExpiresAt DateTime?
 
   createdAt DateTime @default(now())
 
@@ -32,11 +34,16 @@ model Room {
 
   notes         String   @default("")
   status        String   @default("ACTIVE")
+  aiSummary     String   @default("")
+  latestAiReview String  @default("")
+  latestHint    String   @default("")
+  hintCount     Int      @default(0)
 
   createdAt     DateTime @default(now())
 
   participants  Participant[]
   messages      Message[]
+  questionsAsked RoomQuestion[]
 }
 
 model Participant {
@@ -63,4 +70,18 @@ model Message {
   sender User @relation(fields: [senderId], references: [id])
 
   createdAt DateTime @default(now())
+}
+
+model RoomQuestion {
+  id          Int      @id @default(autoincrement())
+  roomId      Int
+  title       String
+  difficulty  String   @default("Easy")
+  description String
+  starterCode String   @default("")
+  testCases   Json
+  source      String   @default("MANUAL")
+  askedAt     DateTime @default(now())
+
+  room        Room     @relation(fields: [roomId], references: [id])
 }

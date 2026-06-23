@@ -7,6 +7,7 @@ function InterviewHistory() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [deletingRoomCode, setDeletingRoomCode] = useState("");
 
   const user = JSON.parse(localStorage.getItem("user") || "{}");
   const token = localStorage.getItem("token");
@@ -58,11 +59,13 @@ function InterviewHistory() {
   const summary = useMemo(() => {
     const interviewsWithNotes = history.filter((item) => item.notes?.trim()).length;
     const totalCandidates = history.reduce((count, item) => count + (item.interviewees?.length || 0), 0);
+    const totalHintsUsed = history.reduce((count, item) => count + (item.hintCount || 0), 0);
 
     return {
       totalRooms: history.length,
       interviewsWithNotes,
       totalCandidates,
+      totalHintsUsed,
     };
   }, [history]);
 
@@ -78,7 +81,33 @@ function InterviewHistory() {
   const copyRoomCode = async (roomCode) => {
     try {
       await navigator.clipboard.writeText(roomCode);
-    } catch {}
+    } catch (error) {
+      console.error("Failed to copy room code", error);
+    }
+  };
+
+  const deleteHistoryEntry = async (roomCode) => {
+    const confirmed = window.confirm(
+      `Delete interview history for room ${roomCode}? This will permanently remove notes, AI insights, messages, participants, and question history.`
+    );
+
+    if (!confirmed) return;
+
+    setDeletingRoomCode(roomCode);
+    setError("");
+
+    try {
+      await api.delete(`/rooms/${roomCode}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      localStorage.removeItem(`interview-notes:${roomCode}`);
+      setHistory((currentHistory) => currentHistory.filter((item) => item.roomCode !== roomCode));
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to delete interview history.");
+    } finally {
+      setDeletingRoomCode("");
+    }
   };
 
   return (
@@ -99,10 +128,11 @@ function InterviewHistory() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-        <section className="grid gap-4 md:grid-cols-3">
+        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <SummaryCard label="Rooms" value={summary.totalRooms} accent="text-violet-400" />
           <SummaryCard label="Candidates" value={summary.totalCandidates} accent="text-emerald-400" />
           <SummaryCard label="Notes Saved" value={summary.interviewsWithNotes} accent="text-blue-400" />
+          <SummaryCard label="Hints Used" value={summary.totalHintsUsed} accent="text-amber-400" />
         </section>
 
         {error && (
@@ -157,6 +187,13 @@ function InterviewHistory() {
                     >
                       Open Room
                     </button>
+                    <button
+                      onClick={() => deleteHistoryEntry(item.roomCode)}
+                      disabled={deletingRoomCode === item.roomCode}
+                      className="px-3 py-2 rounded-lg bg-red-600/90 hover:bg-red-500 disabled:bg-red-900/60 disabled:cursor-not-allowed text-xs font-semibold text-white transition-all"
+                    >
+                      {deletingRoomCode === item.roomCode ? "Deleting..." : "Delete"}
+                    </button>
                   </div>
                 </div>
 
@@ -178,9 +215,9 @@ function InterviewHistory() {
                     )}
                   </section>
 
-                  <section className="px-5 py-4">
+                  <section className="px-5 py-4 space-y-4">
                     <div className="flex items-center justify-between gap-3 mb-3">
-                      <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Interview Notes</h2>
+                      <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Interview Notes & AI Insights</h2>
                       <span className="text-[11px] text-gray-600 font-mono">Saved with room</span>
                     </div>
                     <div className="rounded-xl border border-[#2a2a38] bg-[#0f0f13] px-4 py-3 min-h-40">
@@ -190,6 +227,62 @@ function InterviewHistory() {
                         <p className="text-sm text-gray-500">No interview notes saved for this room.</p>
                       )}
                     </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <InsightCard label="Hints Used" value={item.hintCount || 0} accent="text-amber-300" />
+                      <InsightCard label="Questions Asked" value={item.questionsAsked?.length || 0} accent="text-cyan-300" />
+                    </div>
+
+                    {item.aiSummary?.trim() && (
+                      <div className="rounded-xl border border-[#2a2a38] bg-[#0f0f13] px-4 py-3">
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">AI Summary</h3>
+                          {item.interviewees?.[0]?.name && (
+                            <span className="text-[11px] text-gray-600">Candidate: {item.interviewees[0].name}</span>
+                          )}
+                        </div>
+                        <pre className="whitespace-pre-wrap break-words text-sm text-gray-200 font-sans">{item.aiSummary}</pre>
+                      </div>
+                    )}
+
+                    {item.latestAiReview?.trim() && (
+                      <div className="rounded-xl border border-[#2a2a38] bg-[#0f0f13] px-4 py-3">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Latest AI Review</h3>
+                        <pre className="whitespace-pre-wrap break-words text-sm text-gray-200 font-sans">{item.latestAiReview}</pre>
+                      </div>
+                    )}
+
+                    {item.questionsAsked?.length > 0 && (
+                      <div className="rounded-xl border border-[#2a2a38] bg-[#0f0f13] px-4 py-3">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Questions Asked</h3>
+                          <span className="text-[11px] text-gray-600">Newest first</span>
+                        </div>
+                        <div className="space-y-3">
+                          {item.questionsAsked.map((question) => (
+                            <div key={question.id} className="rounded-xl border border-[#2a2a38] bg-[#111118] px-4 py-3">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-semibold text-white">{question.title}</p>
+                                  <p className="mt-1 text-xs text-gray-500">{formatDate(question.askedAt)}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-300">
+                                    {question.difficulty || "Easy"}
+                                  </span>
+                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-300">
+                                    {question.source || "MANUAL"}
+                                  </span>
+                                </div>
+                              </div>
+                              {question.description?.trim() && (
+                                <pre className="mt-3 whitespace-pre-wrap break-words text-xs text-gray-400 font-sans">{question.description}</pre>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </section>
                 </div>
               </article>
@@ -206,6 +299,15 @@ function SummaryCard({ label, value, accent }) {
     <div className="border border-[#2a2a38] rounded-2xl bg-[#111118] px-5 py-4">
       <p className="text-xs uppercase tracking-wider text-gray-500">{label}</p>
       <p className={`mt-3 text-2xl font-semibold ${accent}`}>{value}</p>
+    </div>
+  );
+}
+
+function InsightCard({ label, value, accent }) {
+  return (
+    <div className="rounded-xl border border-[#2a2a38] bg-[#0f0f13] px-4 py-3">
+      <p className="text-[11px] uppercase tracking-wider text-gray-500">{label}</p>
+      <p className={`mt-2 text-xl font-semibold ${accent}`}>{value}</p>
     </div>
   );
 }
