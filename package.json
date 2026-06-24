@@ -1,6 +1,8 @@
 {
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@prisma/client": "^6.19.3",
+    "prisma": "^6.19.3",
     "socket.io": "^4.8.3"
   }
 }
