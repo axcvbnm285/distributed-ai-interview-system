@@ -12,8 +12,54 @@ const aiRoutes = require("./routes/ai.routes");
 
 const app = express();
 
+function normalizeText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeOrigin(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+
+  try {
+    return new URL(normalized).origin;
+  } catch {
+    return normalized.replace(/\/+$/, "");
+  }
+}
+
+function getAllowedOrigins() {
+  const localOrigins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+  ];
+
+  const configuredOrigins = [
+    process.env.CORS_ORIGIN,
+    process.env.FRONTEND_URL,
+  ]
+    .flatMap((value) => normalizeText(value).split(","))
+    .map(normalizeOrigin)
+    .filter(Boolean);
+
+  return new Set([...localOrigins, ...configuredOrigins]);
+}
+
+const allowedOrigins = getAllowedOrigins();
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(normalizeOrigin(origin))) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use("/code", codeRoutes);
 app.use("/ai", aiRoutes);
@@ -23,10 +69,7 @@ const server = http.createServer(app);
 
 // Socket Server
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: corsOptions,
 });
 
 // Store online users per room
@@ -232,6 +275,10 @@ app.use("/auth", authRoutes);
 app.use("/rooms", roomRoutes);
 
 // Health Check
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
 app.get("/", (req, res) => {
   res.send(
     "Interview Platform API Running"
