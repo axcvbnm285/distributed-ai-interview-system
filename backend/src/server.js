@@ -74,10 +74,29 @@ const io = new Server(server, {
 
 // Store online users per room
 const roomUsers = {};
+const roomState = {};
+const DEFAULT_WAITING_CODE = "# Waiting for the interviewer to load a question...\n";
+const MAX_ROOM_MESSAGES = 100;
 
 // roomMeta tracks who the interviewer is per room (from DB via JWT role)
 // roomMeta[roomCode] = { interviewer: { socketId, name }, interviewee: { socketId, name } }
 const roomMeta = {};
+
+function ensureRoomState(roomCode) {
+  if (!roomState[roomCode]) {
+    roomState[roomCode] = {
+      currentQuestion: null,
+      currentCode: DEFAULT_WAITING_CODE,
+      messages: [],
+    };
+  }
+
+  return roomState[roomCode];
+}
+
+function createMessageId() {
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function emitToRoomRole(io, roomCode, roleKey, eventName, payload) {
   const targetSocketId = roomMeta[roomCode]?.[roleKey]?.socketId;
@@ -100,51 +119,79 @@ io.on("connection", (socket) => {
   socket.on(
     "join-room",
     ({ roomCode, username, userId, role }) => {
+      const normalizedRoomCode = normalizeText(roomCode);
+      const normalizedUsername = normalizeText(username) || "Anonymous";
 
-      socket.join(roomCode);
-      socket.roomCode = roomCode;
-      socket.username = username;
+      if (!normalizedRoomCode) return;
+
+      socket.join(normalizedRoomCode);
+      socket.roomCode = normalizedRoomCode;
+      socket.username = normalizedUsername;
       socket.role     = role; // "INTERVIEWER" | "INTERVIEWEE" from JWT
+      socket.userId   = userId;
 
       // Track room metadata
-      if (!roomMeta[roomCode]) {
-        roomMeta[roomCode] = { interviewer: null, interviewee: null };
+      if (!roomMeta[normalizedRoomCode]) {
+        roomMeta[normalizedRoomCode] = { interviewer: null, interviewee: null };
       }
 
       if (role === "INTERVIEWER") {
-        roomMeta[roomCode].interviewer = { socketId: socket.id, name: username };
+        roomMeta[normalizedRoomCode].interviewer = { socketId: socket.id, name: normalizedUsername };
       } else {
-        roomMeta[roomCode].interviewee = { socketId: socket.id, name: username };
+        roomMeta[normalizedRoomCode].interviewee = { socketId: socket.id, name: normalizedUsername };
       }
 
       // Emit role back to this socket only
       socket.emit("role-assigned", { role });
 
-      console.log(`${username} joined room ${roomCode} as ${role}`);
+      const state = ensureRoomState(normalizedRoomCode);
+      socket.emit("room-state", {
+        question: state.currentQuestion,
+        code: state.currentCode,
+        messages: state.messages,
+      });
+
+      console.log(`${normalizedUsername} joined room ${normalizedRoomCode} as ${role}`);
 
       // Participants list
-      if (!roomUsers[roomCode]) roomUsers[roomCode] = [];
-      if (!roomUsers[roomCode].includes(username)) {
-        roomUsers[roomCode].push(username);
+      if (!roomUsers[normalizedRoomCode]) roomUsers[normalizedRoomCode] = [];
+      if (!roomUsers[normalizedRoomCode].includes(normalizedUsername)) {
+        roomUsers[normalizedRoomCode].push(normalizedUsername);
       }
 
-      io.to(roomCode).emit("participants-update", roomUsers[roomCode]);
+      io.to(normalizedRoomCode).emit("participants-update", roomUsers[normalizedRoomCode]);
     }
   );
 
   // Send Chat Message
   socket.on(
     "send-message",
-    (data) => {
+    ({ roomCode, sender, senderId, message, id, createdAt }) => {
+      const normalizedRoomCode = normalizeText(roomCode) || socket.roomCode;
+      const normalizedMessage = normalizeText(message);
+
+      if (!normalizedRoomCode || !normalizedMessage) return;
+
+      const nextMessage = {
+        id: normalizeText(id) || createMessageId(),
+        roomCode: normalizedRoomCode,
+        sender: normalizeText(sender) || socket.username || "Anonymous",
+        senderId: senderId ?? socket.userId ?? null,
+        message: normalizedMessage,
+        createdAt: normalizeText(createdAt) || new Date().toISOString(),
+      };
+
+      const state = ensureRoomState(normalizedRoomCode);
+      state.messages = [...state.messages, nextMessage].slice(-MAX_ROOM_MESSAGES);
 
       console.log(
         "Message:",
-        data
+        nextMessage
       );
 
-      io.to(data.roomCode).emit(
+      io.to(normalizedRoomCode).emit(
         "receive-message",
-        data
+        nextMessage
       );
 
     }
@@ -153,12 +200,17 @@ io.on("connection", (socket) => {
   socket.on(
   "code-change",
   (data) => {
+    const normalizedRoomCode = normalizeText(data?.roomCode) || socket.roomCode;
+    if (!normalizedRoomCode) return;
+
+    const state = ensureRoomState(normalizedRoomCode);
+    state.currentCode = typeof data?.code === "string" ? data.code : "";
 
     socket
-      .to(data.roomCode)
+      .to(normalizedRoomCode)
       .emit(
         "code-update",
-        data.code
+        state.currentCode
       );
 
   }
@@ -167,8 +219,16 @@ io.on("connection", (socket) => {
 socket.on(
   "question-change",
   (data) => {
+    const normalizedRoomCode = normalizeText(data?.roomCode) || socket.roomCode;
+    if (!normalizedRoomCode) return;
 
-    io.to(data.roomCode)
+    const state = ensureRoomState(normalizedRoomCode);
+    state.currentQuestion = data.question;
+    state.currentCode = typeof data?.question?.starterCode === "string" && data.question.starterCode
+      ? data.question.starterCode
+      : DEFAULT_WAITING_CODE;
+
+    io.to(normalizedRoomCode)
       .emit(
         "question-update",
         data.question

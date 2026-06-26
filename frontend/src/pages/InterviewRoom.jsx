@@ -219,6 +219,21 @@ function QuestionSourceBadge({ source }) {
   );
 }
 
+function createMessageId() {
+  return globalThis.crypto?.randomUUID?.() || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function mergeMessageList(existingMessages, nextMessage) {
+  if (!nextMessage) return existingMessages;
+  if (!nextMessage.id) return [...existingMessages, nextMessage];
+  if (existingMessages.some((message) => message.id === nextMessage.id)) return existingMessages;
+  return [...existingMessages, nextMessage];
+}
+
+function dedupeMessages(messageList) {
+  return (Array.isArray(messageList) ? messageList : []).reduce(mergeMessageList, []);
+}
+
 function InterviewRoom() {
   const { roomCode } = useParams();
   const navigate     = useNavigate();
@@ -615,14 +630,31 @@ function InterviewRoom() {
 
   // ── socket ─────────────────────────────────────────────
   useEffect(() => {
-    socket.emit("join-room", {
-      roomCode,
-      username: currentUserName,
-      userId:   currentUserId,
-      role,                          // send role so server registers it correctly
-    });
+    const joinRoom = () => {
+      socket.emit("join-room", {
+        roomCode,
+        username: currentUserName,
+        userId: currentUserId,
+        role,
+      });
+    };
 
-    socket.on("question-update", (q) => {
+    const onRoomState = (state = {}) => {
+      if (state.question) {
+        setQuestion(state.question);
+        setQuestionView("detail");
+      }
+
+      if (typeof state.code === "string" && state.code) {
+        setCode(state.code);
+      }
+
+      if (Array.isArray(state.messages)) {
+        setMessages(dedupeMessages(state.messages));
+      }
+    };
+
+    const onQuestionUpdate = (q) => {
       setQuestion(q);
       setCode(q.starterCode || PYTHON_BOILERPLATE);
       clearQuestionAiOutputs();
@@ -631,16 +663,36 @@ function InterviewRoom() {
       setActiveCase(0);
       setActiveTab("question");
       setQuestionView("detail");
-    });
-    socket.on("code-update",         setCode);
+    };
+
+    const onCodeUpdate = (nextCode) => {
+      if (typeof nextCode === "string") {
+        setCode(nextCode);
+      }
+    };
+
+    const onReceiveMessage = (nextMessage) => {
+      setMessages((currentMessages) => mergeMessageList(currentMessages, nextMessage));
+    };
+
+    if (socket.connected) {
+      joinRoom();
+    }
+
+    socket.on("connect", joinRoom);
+    socket.on("room-state", onRoomState);
+    socket.on("question-update", onQuestionUpdate);
+    socket.on("code-update", onCodeUpdate);
     socket.on("participants-update", setParticipants);
-    socket.on("receive-message",     (data) => setMessages(p => [...p, data]));
+    socket.on("receive-message", onReceiveMessage);
 
     return () => {
-      socket.off("question-update");
-      socket.off("code-update");
-      socket.off("participants-update");
-      socket.off("receive-message");
+      socket.off("connect", joinRoom);
+      socket.off("room-state", onRoomState);
+      socket.off("question-update", onQuestionUpdate);
+      socket.off("code-update", onCodeUpdate);
+      socket.off("participants-update", setParticipants);
+      socket.off("receive-message", onReceiveMessage);
     };
   }, [currentUserId, currentUserName, role, roomCode]);
 
@@ -728,8 +780,20 @@ function InterviewRoom() {
 
   const copyRoomCode = () => navigator.clipboard.writeText(roomCode);
   const sendMessage  = () => {
-    if (!message.trim()) return;
-    socket.emit("send-message", { roomCode, sender: currentUser.name, message });
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) return;
+
+    const nextMessage = {
+      id: createMessageId(),
+      roomCode,
+      sender: currentUserName,
+      senderId: currentUserId ?? null,
+      message: trimmedMessage,
+      createdAt: new Date().toISOString(),
+    };
+
+    setMessages((currentMessages) => mergeMessageList(currentMessages, nextMessage));
+    socket.emit("send-message", nextMessage);
     setMessage("");
   };
 
@@ -746,7 +810,7 @@ function InterviewRoom() {
   ];
 
   return (
-    <div className="h-screen bg-[#0f0f13] text-white flex flex-col overflow-hidden">
+    <div className="h-screen min-h-0 bg-[#0f0f13] text-white flex flex-col overflow-hidden">
 
       {/* ── Navbar ── */}
       <header className="shrink-0 h-14 border-b border-[#2a2a38] bg-[#0f0f13]/90 backdrop-blur-md flex items-center px-5 gap-4 z-20">
@@ -848,10 +912,10 @@ function InterviewRoom() {
       </header>
 
       {/* ── Body ── */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* ── Left Panel ── */}
-        <aside className="w-[340px] shrink-0 border-r border-[#2a2a38] flex flex-col bg-[#0f0f13] overflow-hidden">
+        <aside className="w-[340px] shrink-0 min-h-0 border-r border-[#2a2a38] flex flex-col bg-[#0f0f13] overflow-hidden">
           <div className="flex border-b border-[#2a2a38] shrink-0">
             {tabs.map(({ id, label }) => (
               <button key={id} onClick={() => setActiveTab(id)}
@@ -1092,7 +1156,7 @@ function InterviewRoom() {
             <div className="px-4 pt-4 pb-1 shrink-0">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Call</p>
             </div>
-            <Webcam username={currentUser.name} roomCode={roomCode} socket={socket} role={role} />
+            <Webcam username={currentUserName} roomCode={roomCode} socket={socket} role={role} />
           </div>
 
           {/* ── Chat Tab ── */}
@@ -1106,16 +1170,20 @@ function InterviewRoom() {
                     </svg>
                     <p className="text-xs">No messages yet</p>
                   </div>
-                ) : messages.map((msg, i) => (
-                  <div key={i} className={`flex flex-col gap-0.5 animate-fade-in ${msg.sender === currentUser.name ? "items-end" : "items-start"}`}>
-                    <span className="text-xs text-gray-600">{msg.sender}</span>
-                    <div className={`max-w-[85%] px-3 py-2 rounded-xl text-sm ${
-                      msg.sender === currentUser.name
-                        ? "bg-violet-600/25 text-violet-100 rounded-tr-none"
-                        : "bg-[#1e1e2a] text-gray-300 rounded-tl-none border border-[#2a2a38]"
-                    }`}>{msg.message}</div>
-                  </div>
-                ))}
+                ) : messages.map((msg, i) => {
+                  const isOwnMessage = msg.senderId === currentUserId || msg.sender === currentUserName;
+
+                  return (
+                    <div key={msg.id || i} className={`flex flex-col gap-0.5 animate-fade-in ${isOwnMessage ? "items-end" : "items-start"}`}>
+                      <span className="text-xs text-gray-600">{msg.sender}</span>
+                      <div className={`max-w-[85%] px-3 py-2 rounded-xl text-sm ${
+                        isOwnMessage
+                          ? "bg-violet-600/25 text-violet-100 rounded-tr-none"
+                          : "bg-[#1e1e2a] text-gray-300 rounded-tl-none border border-[#2a2a38]"
+                      }`}>{msg.message}</div>
+                    </div>
+                  );
+                })}
                 <div ref={chatEndRef} />
               </div>
               <div className="p-4 border-t border-[#2a2a38] flex gap-2 shrink-0">
@@ -1134,11 +1202,12 @@ function InterviewRoom() {
         </aside>
 
         {/* ── Editor + Output ── */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 overflow-hidden">
+        <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto">
+          <div className="shrink-0 h-[50vh] min-h-[360px]">
             <CodeEditor code={code} language={LANGUAGE} onChange={(value) => {
-              setCode(value);
-              socket.emit("code-change", { roomCode, code: value });
+              const nextCode = value ?? "";
+              setCode(nextCode);
+              socket.emit("code-change", { roomCode, code: nextCode });
             }} />
           </div>
 
